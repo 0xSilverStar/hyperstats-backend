@@ -81,8 +81,8 @@ export class WalletSyncScheduler implements OnModuleInit {
             this.logger.log(`Progress: ${i + 1}/${totalWallets} (${progress}%) - Elapsed: ${elapsed} min`);
           }
 
-          // Wait 1 second before next wallet
-          await this.sleep(1000);
+          // Wait 5 seconds before next wallet to avoid rate limiting
+          await this.sleep(5000);
         } catch (error) {
           errorCount++;
           this.logger.error(`Failed to queue sync for wallet ${wallet.address}: ${error.message}`);
@@ -132,8 +132,8 @@ export class WalletSyncScheduler implements OnModuleInit {
         );
         queued++;
 
-        // 1 second interval
-        await this.sleep(1000);
+        // 5 second interval to avoid rate limiting
+        await this.sleep(5000);
       }
 
       return { queued, total: wallets.length };
