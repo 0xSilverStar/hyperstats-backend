@@ -1,11 +1,22 @@
-# ============================================
-# Docker Compose for HyperStats Backend
-# ============================================
-
 services:
-  # ============================================
-  # Redis for Bull Queue
-  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: hyperstats-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hyperstats
+      POSTGRES_PASSWORD: hyperstats
+      POSTGRES_DB: hyperstats
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hyperstats"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hyperstats-network
+
   redis:
     image: redis:7-alpine
     container_name: hyperstats-redis
@@ -21,27 +32,27 @@ services:
     networks:
       - hyperstats-network
 
-  # ============================================
-  # NestJS Backend Application
-  # ============================================
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: hyperstats
     restart: unless-stopped
     ports:
       - "9000:9000"
+    environment:
+      DATABASE_URL: postgresql://hyperstats:hyperstats@postgres:5432/hyperstats
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
       - hyperstats-network
 
 volumes:
+  postgres_data:
   redis_data:
-    driver: local
 
 networks:
   hyperstats-network:
-    driver: bridge
