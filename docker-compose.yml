@@ -37,6 +37,10 @@ services:
       dockerfile: Dockerfile
     container_name: hyperstats
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
     ports:
       - "9000:9000"
     depends_on:

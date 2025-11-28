@@ -52,9 +52,6 @@ RUN npm ci --only=production && \
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Copy .env file
-COPY .env ./
-
 # Change ownership to non-root user
 RUN chown -R nestjs:nodejs /app
 
