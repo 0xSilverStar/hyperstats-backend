@@ -1,0 +1,152 @@
+# ============================================
+# GitHub Actions Workflow for HyperStats Backend
+# ============================================
+# Triggers on push to main branch
+# Syncs code via rsync and builds on server
+#
+# Required GitHub Secrets:
+#   - SERVER_IP: Server IP address
+#   - SERVER_USER: SSH username
+#   - SERVER_PASSWORD: SSH password
+#
+# Note: .env file must be manually placed on server at /app/hyperstats/.env
+# ============================================
+
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Sync code to server
+        run: |
+          # Use rsync with password authentication
+          # -a: archive mode (preserves permissions, timestamps, etc)
+          # -v: verbose
+          # -z: compress during transfer
+          # --delete: delete files on destination that don't exist in source
+          export SSHPASS='${{ secrets.SERVER_PASSWORD }}'
+          sshpass -e rsync -avz --delete \
+            --exclude '.env' \
+            --exclude 'node_modules' \
+            --exclude 'dist' \
+            --exclude '.git' \
+            --exclude 'coverage' \
+            -e "ssh -o StrictHostKeyChecking=no" \
+            ./ ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/app/hyperstats/
+
+      - name: Deploy application
+        run: |
+          export SSHPASS='${{ secrets.SERVER_PASSWORD }}'
+          sshpass -e ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+            set -e  # Exit on any error
+
+            whoami
+            cd /app/hyperstats
+
+            # Check current disk usage before build
+            echo "========================================="
+            echo "Current system status before build:"
+            echo "========================================="
+            echo "Disk usage:"
+            df -h /
+            echo ""
+            echo "Docker space usage:"
+            docker system df
+            echo ""
+
+            # Ensure .env exists
+            if [ ! -f .env ]; then
+              echo "========================================="
+              echo "ERROR: .env file not found!"
+              echo "========================================="
+              echo ""
+              echo "The .env file must be present at: /app/hyperstats/.env"
+              echo ""
+              echo "Please manually copy your .env file to the server:"
+              echo "  scp .env user@server:/app/hyperstats/.env"
+              echo ""
+              echo "The .env file is excluded from rsync sync for security reasons."
+              echo "========================================="
+              exit 1
+            fi
+
+            # Build and deploy with error checking
+            echo "Building and deploying application..."
+            if ! docker-compose up -d --build; then
+              echo "ERROR: Docker build/deploy failed!"
+              echo "Checking Docker logs..."
+              docker-compose logs --tail=50 app
+              exit 1
+            fi
+
+            # Run database schema push
+            echo "Pushing database schema..."
+            docker-compose exec -T app npx prisma db push --accept-data-loss || true
+
+            # Verify the container is running
+            echo "Verifying container status..."
+            sleep 5
+            if ! docker-compose ps | grep -q "hyperstats.*Up"; then
+              echo "ERROR: Container 'hyperstats' is not running!"
+              docker-compose ps
+              docker-compose logs --tail=50 app
+              exit 1
+            fi
+
+            # Health check
+            echo "Running health check..."
+            sleep 10
+            if curl -f http://localhost:9000/v1/sync-status > /dev/null 2>&1; then
+              echo "Health check passed!"
+            else
+              echo "WARNING: Health check failed, but container is running"
+            fi
+
+            # Docker cleanup - run after successful deployment
+            echo "========================================="
+            echo "Starting Docker cleanup after deployment..."
+            echo "========================================="
+
+            # Remove unused images
+            echo "Removing unused images..."
+            docker image prune -af
+
+            # Remove all build cache
+            echo "Removing build cache..."
+            docker builder prune -af
+
+            # Remove unused volumes
+            echo "Removing unused volumes..."
+            docker volume prune -f
+
+            # Check final status
+            echo ""
+            echo "Cleanup completed. Final status:"
+            docker system df
+            df -h /
+            echo ""
+
+            # Show running containers
+            echo "Running containers:"
+            docker-compose ps
+
+            echo "========================================="
+            echo "Deployment completed successfully!"
+            echo "========================================="
+          EOF
+
+      - name: Deploy Complete
+        run: echo "Deployed!"
