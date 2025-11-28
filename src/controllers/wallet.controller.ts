@@ -86,4 +86,16 @@ export class WalletController {
       data: status,
     };
   }
+
+  @Get(':address/analytics')
+  async analytics(@Param('address') address: string, @Query('period') period?: string) {
+    const validPeriods = ['1h', '24h', '7d', '30d', '3m', '1y', 'all'];
+    const selectedPeriod = validPeriods.includes(period || '') ? period : '30d';
+    const analytics = await this.tradingDataService.getAnalytics(address, selectedPeriod);
+
+    return {
+      success: true,
+      data: analytics,
+    };
+  }
 }

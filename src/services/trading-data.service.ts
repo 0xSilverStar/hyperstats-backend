@@ -840,4 +840,508 @@ export class TradingDataService {
 
     await this.setCacheTimestamp(address, 'profile');
   }
+
+  /**
+   * Get trading analytics for a wallet
+   * Calculates performance metrics from fills, positions, and ledger data
+   * @param address - wallet address
+   * @param period - time period: '1h', '24h', '7d', '30d', '3m', '1y', 'all'
+   */
+  async getAnalytics(address: string, period: string = 'all') {
+    const normalizedAddress = address.toLowerCase();
+
+    // Calculate time filter based on period
+    const now = Date.now();
+    const periodMs: Record<string, number> = {
+      '1h': 60 * 60 * 1000,
+      '24h': 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000,
+      '3m': 90 * 24 * 60 * 60 * 1000,
+      '1y': 365 * 24 * 60 * 60 * 1000,
+    };
+
+    const sinceTimestamp = period === 'all' ? 0 : now - (periodMs[period] || periodMs['30d']);
+
+    // Get all fills for analysis
+    const allFills = await this.prisma.fill.findMany({
+      where: { wallet_address: normalizedAddress },
+      orderBy: { fill_timestamp: 'asc' },
+    });
+
+    // Filter fills by period
+    const fills = period === 'all'
+      ? allFills
+      : allFills.filter((f) => Number(f.fill_timestamp) >= sinceTimestamp);
+
+    // Get current positions for position distribution
+    const positions = await this.prisma.position.findMany({
+      where: { wallet_address: normalizedAddress },
+    });
+
+    // Get wallet info
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { address: normalizedAddress },
+    });
+
+    // Calculate basic metrics for the period
+    const totalTrades = fills.length;
+    const tradesWithPnl = fills.filter((f) => f.closed_pnl !== null);
+    const winningTrades = tradesWithPnl.filter((f) => parseFloat(f.closed_pnl?.toString() ?? '0') > 0);
+    const losingTrades = tradesWithPnl.filter((f) => parseFloat(f.closed_pnl?.toString() ?? '0') < 0);
+
+    const winRate = tradesWithPnl.length > 0 ? (winningTrades.length / tradesWithPnl.length) * 100 : 0;
+
+    // Calculate total volume for the period
+    const totalVolume = fills.reduce((sum, f) => {
+      const price = parseFloat(f.price?.toString() ?? '0');
+      const size = parseFloat(f.size?.toString() ?? '0');
+      return sum + price * size;
+    }, 0);
+
+    // Calculate total realized P&L for the period
+    const totalRealizedPnl = tradesWithPnl.reduce((sum, f) => sum + parseFloat(f.closed_pnl?.toString() ?? '0'), 0);
+
+    // Calculate total fees for the period
+    const totalFees = fills.reduce((sum, f) => sum + parseFloat(f.fee?.toString() ?? '0'), 0);
+
+    // Time-based P&L calculations (always calculate these for reference)
+    const oneHourAgo = now - 60 * 60 * 1000;
+    const oneDayAgo = now - 24 * 60 * 60 * 1000;
+    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+
+    const allTradesWithPnl = allFills.filter((f) => f.closed_pnl !== null);
+    const pnl1h = this.calculatePeriodMetrics(allTradesWithPnl, allFills, oneHourAgo);
+    const pnl24h = this.calculatePeriodMetrics(allTradesWithPnl, allFills, oneDayAgo);
+    const pnl7d = this.calculatePeriodMetrics(allTradesWithPnl, allFills, sevenDaysAgo);
+    const pnl30d = this.calculatePeriodMetrics(allTradesWithPnl, allFills, thirtyDaysAgo);
+
+    // P&L aggregation for charts (hourly for 1h/24h, daily for 7d/30d)
+    const aggregatedPnl = this.calculateAggregatedPnl(tradesWithPnl, fills, period);
+
+    // Trading statistics for the period
+    const tradingStats = this.calculateTradingStats(tradesWithPnl, aggregatedPnl);
+
+    // Position distribution (current, not affected by period)
+    const longPositions = positions.filter((p) => p.side === 'long');
+    const shortPositions = positions.filter((p) => p.side === 'short');
+    const totalPositionValue = positions.reduce((sum, p) => sum + parseFloat(p.position_value?.toString() ?? '0'), 0);
+    const longValue = longPositions.reduce((sum, p) => sum + parseFloat(p.position_value?.toString() ?? '0'), 0);
+    const shortValue = shortPositions.reduce((sum, p) => sum + parseFloat(p.position_value?.toString() ?? '0'), 0);
+
+    // Calculate performance metrics for the period
+    const performanceMetrics = this.calculatePerformanceMetrics(aggregatedPnl, totalRealizedPnl, winningTrades, losingTrades);
+
+    // Average position size for the period
+    const avgPositionSize = totalTrades > 0 ? totalVolume / totalTrades : 0;
+
+    // Current unrealized P&L (current, not affected by period)
+    const totalUnrealizedPnl = positions.reduce((sum, p) => sum + parseFloat(p.unrealized_pnl?.toString() ?? '0'), 0);
+
+    // Chart data for the selected period
+    const chartData = this.generateChartDataForPeriod(aggregatedPnl, period);
+
+    return {
+      address: normalizedAddress,
+      period,
+      summary: {
+        totalTrades,
+        totalVolume,
+        totalRealizedPnl,
+        totalUnrealizedPnl,
+        totalFees,
+        winRate,
+        avgPositionSize,
+      },
+      pnl: {
+        pnl1h: pnl1h,
+        pnl24h: pnl24h,
+        pnl7d: pnl7d,
+        pnl30d: pnl30d,
+      },
+      positionDistribution: {
+        longCount: longPositions.length,
+        shortCount: shortPositions.length,
+        longValue,
+        shortValue,
+        longPercent: totalPositionValue > 0 ? (longValue / totalPositionValue) * 100 : 50,
+        shortPercent: totalPositionValue > 0 ? (shortValue / totalPositionValue) * 100 : 50,
+      },
+      tradingStats,
+      performanceMetrics,
+      chartData,
+      wallet: wallet
+        ? {
+            totalDeposit: parseFloat(wallet.total_deposit?.toString() ?? '0'),
+            totalWithdraw: parseFloat(wallet.total_withdraw?.toString() ?? '0'),
+            netDeposit:
+              parseFloat(wallet.total_deposit?.toString() ?? '0') - parseFloat(wallet.total_withdraw?.toString() ?? '0'),
+          }
+        : null,
+    };
+  }
+
+  private calculatePeriodMetrics(tradesWithPnl: any[], allFills: any[], sinceTimestamp: number) {
+    const periodTrades = tradesWithPnl.filter((t) => Number(t.fill_timestamp) >= sinceTimestamp);
+    const periodFills = allFills.filter((f) => Number(f.fill_timestamp) >= sinceTimestamp);
+
+    const pnl = periodTrades.reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0);
+    const volume = periodFills.reduce((sum, f) => {
+      const price = parseFloat(f.price?.toString() ?? '0');
+      const size = parseFloat(f.size?.toString() ?? '0');
+      return sum + price * size;
+    }, 0);
+
+    return {
+      amount: pnl,
+      volume: volume,
+      trades: periodFills.length,
+      percentage: volume > 0 ? (pnl / volume) * 100 : 0,
+    };
+  }
+
+  /**
+   * Get ISO week number and year for a date (uses UTC consistently)
+   * Returns { year, week } where year is the ISO week-year (can differ from calendar year)
+   */
+  private getISOWeekAndYear(date: Date): { year: number; week: number } {
+    // Create UTC date to avoid timezone issues
+    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    // ISO week-year is the year of the Thursday of that week
+    const isoYear = d.getUTCFullYear();
+    const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+    const week = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    return { year: isoYear, week };
+  }
+
+  /**
+   * Get aggregation key based on period (uses UTC consistently)
+   * - 1h, 24h: hourly aggregation
+   * - 7d, 30d: daily aggregation
+   * - 3m, 1y, all: weekly aggregation for performance
+   */
+  private getAggregationKey(date: Date, period: string): string {
+    if (period === '1h' || period === '24h') {
+      // Hourly: YYYY-MM-DD HH:00 (UTC)
+      const dateStr = date.toISOString().split('T')[0];
+      const hour = date.getUTCHours().toString().padStart(2, '0');
+      return `${dateStr} ${hour}:00`;
+    } else if (period === '7d' || period === '30d') {
+      // Daily: YYYY-MM-DD (UTC)
+      return date.toISOString().split('T')[0];
+    } else {
+      // Weekly for 3m, 1y, all: YYYY-WXX (using ISO week-year)
+      const { year, week } = this.getISOWeekAndYear(date);
+      return `${year}-W${week.toString().padStart(2, '0')}`;
+    }
+  }
+
+  private calculateAggregatedPnl(
+    trades: any[],
+    fills: any[],
+    period: string,
+  ): Map<string, { pnl: number; volume: number; trades: number }> {
+    const aggregatedPnl = new Map<string, { pnl: number; volume: number; trades: number }>();
+
+    for (const trade of trades) {
+      const timestamp = Number(trade.fill_timestamp);
+      const date = new Date(timestamp);
+      const key = this.getAggregationKey(date, period);
+
+      const current = aggregatedPnl.get(key) || { pnl: 0, volume: 0, trades: 0 };
+      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
+      const volume = parseFloat(trade.price?.toString() ?? '0') * parseFloat(trade.size?.toString() ?? '0');
+
+      aggregatedPnl.set(key, {
+        pnl: current.pnl + pnl,
+        volume: current.volume + volume,
+        trades: current.trades + 1,
+      });
+    }
+
+    // Add volume from fills without P&L
+    for (const fill of fills) {
+      if (fill.closed_pnl !== null) continue; // Already counted
+
+      const timestamp = Number(fill.fill_timestamp);
+      const date = new Date(timestamp);
+      const key = this.getAggregationKey(date, period);
+
+      const current = aggregatedPnl.get(key) || { pnl: 0, volume: 0, trades: 0 };
+      const volume = parseFloat(fill.price?.toString() ?? '0') * parseFloat(fill.size?.toString() ?? '0');
+
+      aggregatedPnl.set(key, {
+        pnl: current.pnl,
+        volume: current.volume + volume,
+        trades: current.trades + 1,
+      });
+    }
+
+    return aggregatedPnl;
+  }
+
+  /**
+   * Convert ISO week string (YYYY-WXX) to a date representing the Monday of that week (UTC)
+   */
+  private weekStringToDate(weekStr: string): Date {
+    const [yearStr, weekPart] = weekStr.split('-W');
+    const year = parseInt(yearStr, 10);
+    const week = parseInt(weekPart, 10);
+    // Get Jan 4th of the year in UTC (always in week 1 per ISO 8601)
+    const jan4 = new Date(Date.UTC(year, 0, 4));
+    // Get Monday of week 1 (ISO week starts on Monday)
+    const dayOfWeek = jan4.getUTCDay() || 7; // Convert Sunday=0 to 7
+    const week1Monday = new Date(jan4);
+    week1Monday.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
+    // Add (week - 1) * 7 days to get to the target week's Monday
+    const targetDate = new Date(week1Monday);
+    targetDate.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
+    return targetDate;
+  }
+
+  private generateChartDataForPeriod(
+    aggregatedPnl: Map<string, { pnl: number; volume: number; trades: number }>,
+    period: string,
+  ) {
+    const chartData: Array<{
+      date: string;
+      time: string;
+      pnl: number;
+      cumulativePnl: number;
+      volume: number;
+      trades: number;
+    }> = [];
+
+    // Sort keys
+    const sortedKeys = Array.from(aggregatedPnl.keys()).sort();
+
+    // Calculate cumulative P&L
+    let cumulativePnl = 0;
+
+    for (const key of sortedKeys) {
+      const data = aggregatedPnl.get(key)!;
+      cumulativePnl += data.pnl;
+
+      // Format time label based on period and key format
+      let timeLabel: string;
+      if (period === '1h' || period === '24h') {
+        // For hourly data (YYYY-MM-DD HH:00), show hour
+        const parts = key.split(' ');
+        timeLabel = parts[1] || key;
+      } else if (period === '7d' || period === '30d') {
+        // For daily data (YYYY-MM-DD), show date
+        const date = new Date(key);
+        timeLabel = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      } else {
+        // For weekly data (YYYY-WXX), show week range
+        const weekDate = this.weekStringToDate(key);
+        timeLabel = weekDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      }
+
+      chartData.push({
+        date: key,
+        time: timeLabel,
+        pnl: data.pnl,
+        cumulativePnl,
+        volume: data.volume,
+        trades: data.trades,
+      });
+    }
+
+    return chartData;
+  }
+
+  private calculatePnlForPeriod(trades: any[], sinceTimestamp: number): number {
+    return trades
+      .filter((t) => Number(t.fill_timestamp) >= sinceTimestamp)
+      .reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0);
+  }
+
+  private calculatePnlPercentage(pnl: number, volume: number): number {
+    if (volume === 0) return 0;
+    return (pnl / volume) * 100;
+  }
+
+  private calculateDailyPnl(trades: any[]): Map<string, { pnl: number; volume: number; trades: number }> {
+    const dailyPnl = new Map<string, { pnl: number; volume: number; trades: number }>();
+
+    for (const trade of trades) {
+      const date = new Date(Number(trade.fill_timestamp)).toISOString().split('T')[0];
+      const current = dailyPnl.get(date) || { pnl: 0, volume: 0, trades: 0 };
+      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
+      const volume = parseFloat(trade.price?.toString() ?? '0') * parseFloat(trade.size?.toString() ?? '0');
+
+      dailyPnl.set(date, {
+        pnl: current.pnl + pnl,
+        volume: current.volume + volume,
+        trades: current.trades + 1,
+      });
+    }
+
+    return dailyPnl;
+  }
+
+  private calculateTradingStats(trades: any[], dailyPnl: Map<string, { pnl: number; volume: number; trades: number }>) {
+    // Find best and worst days
+    let bestDay = { date: '', amount: 0 };
+    let worstDay = { date: '', amount: 0 };
+    let profitableDays = 0;
+    let totalDays = 0;
+
+    for (const [date, data] of dailyPnl) {
+      totalDays++;
+      if (data.pnl > 0) profitableDays++;
+      if (data.pnl > bestDay.amount) {
+        bestDay = { date, amount: data.pnl };
+      }
+      if (data.pnl < worstDay.amount) {
+        worstDay = { date, amount: data.pnl };
+      }
+    }
+
+    // Calculate win/loss streaks
+    let currentWinStreak = 0;
+    let currentLossStreak = 0;
+    let maxWinStreak = 0;
+    let maxLossStreak = 0;
+
+    for (const trade of trades) {
+      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
+      if (pnl > 0) {
+        currentWinStreak++;
+        currentLossStreak = 0;
+        maxWinStreak = Math.max(maxWinStreak, currentWinStreak);
+      } else if (pnl < 0) {
+        currentLossStreak++;
+        currentWinStreak = 0;
+        maxLossStreak = Math.max(maxLossStreak, currentLossStreak);
+      }
+    }
+
+    // Find largest win and loss
+    let largestWin = { amount: 0, coin: '' };
+    let largestLoss = { amount: 0, coin: '' };
+
+    for (const trade of trades) {
+      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
+      if (pnl > largestWin.amount) {
+        largestWin = { amount: pnl, coin: trade.coin };
+      }
+      if (pnl < largestLoss.amount) {
+        largestLoss = { amount: pnl, coin: trade.coin };
+      }
+    }
+
+    // Average daily P&L
+    const avgDailyPnl = totalDays > 0 ? Array.from(dailyPnl.values()).reduce((sum, d) => sum + d.pnl, 0) / totalDays : 0;
+
+    return {
+      bestDay: { date: bestDay.date, amount: bestDay.amount },
+      worstDay: { date: worstDay.date, amount: worstDay.amount },
+      winStreak: maxWinStreak,
+      lossStreak: maxLossStreak,
+      profitableDays,
+      totalDays,
+      avgDailyPnl,
+      largestWin,
+      largestLoss,
+    };
+  }
+
+  private calculatePerformanceMetrics(
+    dailyPnl: Map<string, { pnl: number; volume: number; trades: number }>,
+    totalRealizedPnl: number,
+    winningTrades: any[],
+    losingTrades: any[],
+  ) {
+    const dailyReturns = Array.from(dailyPnl.values()).map((d) => d.pnl);
+
+    // Calculate Sharpe Ratio (simplified - assumes risk-free rate of 0)
+    const avgReturn = dailyReturns.length > 0 ? dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length : 0;
+    const variance =
+      dailyReturns.length > 1
+        ? dailyReturns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (dailyReturns.length - 1)
+        : 0;
+    const stdDev = Math.sqrt(variance);
+    const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0; // Annualized
+
+    // Calculate Sortino Ratio (uses only negative returns for downside deviation)
+    const negativeReturns = dailyReturns.filter((r) => r < 0);
+    const downsideVariance =
+      negativeReturns.length > 1
+        ? negativeReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / negativeReturns.length
+        : 0;
+    const downsideStdDev = Math.sqrt(downsideVariance);
+    const sortinoRatio = downsideStdDev > 0 ? (avgReturn / downsideStdDev) * Math.sqrt(252) : 0;
+
+    // Calculate Profit Factor (gross profit / gross loss)
+    const grossProfit = winningTrades.reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0);
+    const grossLoss = Math.abs(losingTrades.reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0));
+    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+
+    // Calculate Max Drawdown
+    let maxDrawdown = 0;
+    let peak = 0;
+    let cumPnl = 0;
+
+    for (const dailyReturn of dailyReturns) {
+      cumPnl += dailyReturn;
+      if (cumPnl > peak) peak = cumPnl;
+      const drawdown = peak - cumPnl;
+      if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+    }
+
+    const maxDrawdownPercent = peak > 0 ? (maxDrawdown / peak) * 100 : 0;
+
+    return {
+      sharpeRatio: isFinite(sharpeRatio) ? sharpeRatio : 0,
+      sortinoRatio: isFinite(sortinoRatio) ? sortinoRatio : 0,
+      profitFactor: isFinite(profitFactor) ? profitFactor : 0,
+      maxDrawdown,
+      maxDrawdownPercent,
+      grossProfit,
+      grossLoss,
+    };
+  }
+
+  private generateChartData(
+    dailyPnl: Map<string, { pnl: number; volume: number; trades: number }>,
+    fills: any[],
+  ) {
+    // Generate last 30 days of data
+    const chartData: Array<{
+      date: string;
+      time: string;
+      pnl: number;
+      cumulativePnl: number;
+      volume: number;
+      trades: number;
+    }> = [];
+
+    // Sort dates
+    const sortedDates = Array.from(dailyPnl.keys()).sort();
+
+    // Calculate cumulative P&L
+    let cumulativePnl = 0;
+
+    for (const date of sortedDates) {
+      const data = dailyPnl.get(date)!;
+      cumulativePnl += data.pnl;
+
+      chartData.push({
+        date,
+        time: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        pnl: data.pnl,
+        cumulativePnl,
+        volume: data.volume,
+        trades: data.trades,
+      });
+    }
+
+    // Return last 30 days
+    return chartData.slice(-30);
+  }
 }
