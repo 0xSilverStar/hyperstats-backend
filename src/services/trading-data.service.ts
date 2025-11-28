@@ -310,6 +310,14 @@ export class TradingDataService {
         returnOnEquity: p.return_on_equity?.toString() ?? null,
         liquidationPrice: p.liquidation_price?.toString() ?? null,
         marginUsed: p.margin_used.toString(),
+        cumFunding:
+          p.cum_funding_all_time || p.cum_funding_since_open || p.cum_funding_since_change
+            ? {
+                allTime: p.cum_funding_all_time?.toString() ?? '0',
+                sinceOpen: p.cum_funding_since_open?.toString() ?? '0',
+                sinceChange: p.cum_funding_since_change?.toString() ?? '0',
+              }
+            : null,
       })),
       orders: orders.map((o) => ({
         orderId: o.order_id.toString(),
@@ -384,6 +392,14 @@ export class TradingDataService {
         returnOnEquity: p.return_on_equity?.toString() ?? '0',
         liquidationPx: p.liquidation_price?.toString() ?? null,
         marginUsed: p.margin_used.toString(),
+        cumFunding:
+          p.cum_funding_all_time || p.cum_funding_since_open || p.cum_funding_since_change
+            ? {
+                allTime: p.cum_funding_all_time?.toString() ?? '0',
+                sinceOpen: p.cum_funding_since_open?.toString() ?? '0',
+                sinceChange: p.cum_funding_since_change?.toString() ?? '0',
+              }
+            : null,
       })),
       positionsCount: positions.length,
       longCount,
@@ -682,6 +698,9 @@ export class TradingDataService {
             position_value: new Prisma.Decimal(parseFloat(position.positionValue ?? '0')),
             return_on_equity: position.returnOnEquity ? new Prisma.Decimal(parseFloat(position.returnOnEquity)) : null,
             leverage_type: typeof leverage === 'object' ? (leverage?.type ?? null) : null,
+            cum_funding_all_time: position.cumFunding?.allTime ? new Prisma.Decimal(parseFloat(position.cumFunding.allTime)) : null,
+            cum_funding_since_open: position.cumFunding?.sinceOpen ? new Prisma.Decimal(parseFloat(position.cumFunding.sinceOpen)) : null,
+            cum_funding_since_change: position.cumFunding?.sinceChange ? new Prisma.Decimal(parseFloat(position.cumFunding.sinceChange)) : null,
             last_updated_at: new Date(),
           },
         });

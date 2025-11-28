@@ -73,23 +73,26 @@ model SyncStatus {
 
 // Position model - stores trader positions
 model Position {
-  id                Int      @id @default(autoincrement())
-  wallet_address    String
-  coin              String
-  position_size     Decimal  @db.Decimal(65, 18)
-  entry_price       Decimal  @db.Decimal(65, 18)
-  mark_price        Decimal  @db.Decimal(65, 18)
-  unrealized_pnl    Decimal  @db.Decimal(65, 18)
-  liquidation_price Decimal? @db.Decimal(65, 18)
-  leverage          Int
-  margin_used       Decimal  @db.Decimal(65, 18)
-  side              String // 'long' or 'short'
-  position_value    Decimal  @db.Decimal(65, 18)
-  return_on_equity  Decimal? @db.Decimal(65, 18)
-  leverage_type     String?
-  last_updated_at   DateTime
-  created_at        DateTime @default(now())
-  updated_at        DateTime @updatedAt
+  id                       Int      @id @default(autoincrement())
+  wallet_address           String
+  coin                     String
+  position_size            Decimal  @db.Decimal(65, 18)
+  entry_price              Decimal  @db.Decimal(65, 18)
+  mark_price               Decimal  @db.Decimal(65, 18)
+  unrealized_pnl           Decimal  @db.Decimal(65, 18)
+  liquidation_price        Decimal? @db.Decimal(65, 18)
+  leverage                 Int
+  margin_used              Decimal  @db.Decimal(65, 18)
+  side                     String // 'long' or 'short'
+  position_value           Decimal  @db.Decimal(65, 18)
+  return_on_equity         Decimal? @db.Decimal(65, 18)
+  leverage_type            String?
+  cum_funding_all_time     Decimal? @db.Decimal(65, 18)
+  cum_funding_since_open   Decimal? @db.Decimal(65, 18)
+  cum_funding_since_change Decimal? @db.Decimal(65, 18)
+  last_updated_at          DateTime
+  created_at               DateTime @default(now())
+  updated_at               DateTime @updatedAt
 
   @@unique([wallet_address, coin])
   @@index([wallet_address])

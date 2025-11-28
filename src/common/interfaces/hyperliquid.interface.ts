@@ -1,3 +1,9 @@
+export interface HyperLiquidCumFunding {
+  allTime: string;
+  sinceOpen: string;
+  sinceChange: string;
+}
+
 export interface HyperLiquidPosition {
   coin: string;
   szi: string;
@@ -9,7 +15,7 @@ export interface HyperLiquidPosition {
   liquidationPx?: string;
   marginUsed: string;
   maxLeverage?: number;
-  cumFunding?: string;
+  cumFunding?: HyperLiquidCumFunding;
   markPx?: string;
 }
 
