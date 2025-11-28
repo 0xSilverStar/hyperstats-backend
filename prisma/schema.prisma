@@ -1,0 +1,281 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Wallet model - stores whale wallet information
+model Wallet {
+  id                Int       @id @default(autoincrement())
+  address           String    @unique
+  total_deposit     Decimal   @default(0) @db.Decimal(65, 18)
+  total_withdraw    Decimal   @default(0) @db.Decimal(65, 18)
+  transaction_count Int       @default(0)
+  first_seen_at     DateTime?
+  last_activity_at  DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  @@index([total_deposit])
+  @@index([total_withdraw])
+  @@index([last_activity_at])
+  @@map("wallets")
+}
+
+// Transaction model - stores bridge transactions >= min whale amount
+model Transaction {
+  id             Int      @id @default(autoincrement())
+  tx_hash        String
+  from_address   String
+  to_address     String
+  wallet_address String
+  amount         Decimal  @db.Decimal(65, 18)
+  type           String // 'deposit' or 'withdraw'
+  block_number   Int
+  timestamp      DateTime
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@unique([tx_hash, from_address, to_address], name: "unique_transfer")
+  @@index([tx_hash])
+  @@index([from_address])
+  @@index([to_address])
+  @@index([wallet_address])
+  @@index([type])
+  @@index([block_number])
+  @@index([timestamp])
+  @@index([wallet_address, type])
+  @@map("transactions")
+}
+
+// SyncStatus model - tracks blockchain sync progress
+model SyncStatus {
+  id                Int       @id @default(autoincrement())
+  start_block       Int
+  end_block         Int
+  last_synced_block Int?
+  status            String    @default("syncing") // 'syncing' or 'completed'
+  completed_at      DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  @@unique([start_block, end_block], name: "unique_block_range")
+  @@index([status])
+  @@map("sync_status")
+}
+
+// Position model - stores trader positions
+model Position {
+  id                Int      @id @default(autoincrement())
+  wallet_address    String
+  coin              String
+  position_size     Decimal  @db.Decimal(65, 18)
+  entry_price       Decimal  @db.Decimal(65, 18)
+  mark_price        Decimal  @db.Decimal(65, 18)
+  unrealized_pnl    Decimal  @db.Decimal(65, 18)
+  liquidation_price Decimal? @db.Decimal(65, 18)
+  leverage          Int
+  margin_used       Decimal  @db.Decimal(65, 18)
+  side              String // 'long' or 'short'
+  position_value    Decimal  @db.Decimal(65, 18)
+  return_on_equity  Decimal? @db.Decimal(65, 18)
+  leverage_type     String?
+  last_updated_at   DateTime
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@unique([wallet_address, coin])
+  @@index([wallet_address])
+  @@index([coin])
+  @@index([last_updated_at])
+  @@index([position_size])
+  @@map("positions")
+}
+
+// Order model - stores open orders
+model Order {
+  id                Int      @id @default(autoincrement())
+  wallet_address    String
+  order_id          BigInt   @unique
+  coin              String
+  side              String // 'buy' or 'sell'
+  order_type        String
+  limit_price       Decimal? @db.Decimal(65, 18)
+  size              Decimal  @db.Decimal(65, 18)
+  filled_size       Decimal  @default(0) @db.Decimal(65, 18)
+  status            String   @default("open") // 'open', 'filled', 'canceled'
+  reduce_only       Boolean  @default(false)
+  trigger_condition String?
+  is_position_tpsl  Boolean  @default(false)
+  cloid             String?
+  order_timestamp   BigInt
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@index([wallet_address])
+  @@index([coin])
+  @@index([status])
+  @@index([order_timestamp])
+  @@map("orders")
+}
+
+// Fill model - stores trade fills
+model Fill {
+  id             Int      @id @default(autoincrement())
+  wallet_address String
+  tx_hash        String
+  order_id       BigInt?
+  coin           String
+  side           String // 'buy' or 'sell'
+  price          Decimal  @db.Decimal(65, 18)
+  size           Decimal  @db.Decimal(65, 18)
+  direction      String?
+  closed_pnl     Decimal? @db.Decimal(65, 18)
+  fee            Decimal? @db.Decimal(65, 18)
+  fee_token      String?
+  start_position Decimal? @db.Decimal(65, 18)
+  crossed        Boolean  @default(false)
+  fill_timestamp BigInt
+  tid            BigInt?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@unique([tx_hash, order_id, fill_timestamp])
+  @@index([wallet_address])
+  @@index([coin])
+  @@index([fill_timestamp])
+  @@index([order_id])
+  @@map("fills")
+}
+
+// Balance model - stores spot balances
+model Balance {
+  id                Int      @id @default(autoincrement())
+  wallet_address    String
+  coin              String
+  token_id          Int?
+  total_balance     Decimal  @db.Decimal(65, 18)
+  hold_balance      Decimal  @default(0) @db.Decimal(65, 18)
+  available_balance Decimal  @db.Decimal(65, 18)
+  entry_value       Decimal? @db.Decimal(65, 18)
+  last_updated_at   DateTime
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@unique([wallet_address, coin])
+  @@index([wallet_address])
+  @@index([coin])
+  @@index([last_updated_at])
+  @@map("balances")
+}
+
+// TradingPair model - stores trading pair metadata
+model TradingPair {
+  id              Int      @id @default(autoincrement())
+  symbol          String   @unique
+  sz_decimals     Int
+  max_leverage    Int
+  margin_table_id Int
+  only_isolated   Boolean  @default(false)
+  is_delisted     Boolean  @default(false)
+  margin_mode     String?
+  pair_type       String   @default("perp") // 'perp' or 'spot'
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([symbol])
+  @@index([is_delisted])
+  @@index([pair_type])
+  @@map("trading_pairs")
+}
+
+// Cache model - for database-level caching
+model Cache {
+  id             Int      @id @default(autoincrement())
+  wallet_address String
+  cache_type     String   // 'positions', 'orders', 'fills', 'balances', 'profile'
+  synced_at      DateTime
+  expires_at     DateTime
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@unique([wallet_address, cache_type])
+  @@index([wallet_address])
+  @@index([cache_type])
+  @@index([expires_at])
+  @@index([synced_at])
+  @@map("cache")
+}
+
+// LedgerUpdate model - stores ledger updates (deposits, withdrawals, transfers)
+model LedgerUpdate {
+  id              Int      @id @default(autoincrement())
+  wallet_address  String
+  tx_hash         String
+  time            BigInt   // timestamp in milliseconds
+  type            String   // 'deposit', 'withdraw', 'send', 'internalTransfer', etc.
+  usdc            Decimal? @db.Decimal(65, 18)
+  usdc_value      Decimal? @db.Decimal(65, 18)
+  token           String?
+  amount          Decimal? @db.Decimal(65, 18)
+  fee             Decimal? @db.Decimal(65, 18)
+  user            String?  // sender for incoming transfers
+  destination     String?  // receiver for outgoing transfers
+  source_dex      String?  // 'spot' or 'perp'
+  destination_dex String?  // 'spot' or 'perp'
+  nonce           BigInt?
+  fee_token       String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([wallet_address, tx_hash, time])
+  @@index([wallet_address])
+  @@index([tx_hash])
+  @@index([time])
+  @@index([type])
+  @@index([wallet_address, time])
+  @@map("ledger_updates")
+}
+
+// LedgerSyncStatus model - tracks ledger sync progress per wallet
+model LedgerSyncStatus {
+  id                Int       @id @default(autoincrement())
+  wallet_address    String    @unique
+  last_synced_time  BigInt    @default(0) // last synced timestamp in milliseconds
+  total_count       Int       @default(0) // total ledger entries synced
+  is_syncing        Boolean   @default(false) // true if sync is in progress
+  sync_started_at   DateTime? // when current sync started
+  last_synced_at    DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  @@index([wallet_address])
+  @@index([last_synced_time])
+  @@index([is_syncing])
+  @@map("ledger_sync_status")
+}
+
+// FillSyncStatus model - tracks fill sync progress per wallet
+model FillSyncStatus {
+  id                Int       @id @default(autoincrement())
+  wallet_address    String    @unique
+  last_synced_time  BigInt    @default(0) // last synced timestamp in milliseconds
+  total_count       Int       @default(0) // total fill entries synced
+  is_syncing        Boolean   @default(false) // true if sync is in progress
+  sync_started_at   DateTime? // when current sync started
+  last_synced_at    DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  @@index([wallet_address])
+  @@index([last_synced_time])
+  @@index([is_syncing])
+  @@map("fill_sync_status")
+}
