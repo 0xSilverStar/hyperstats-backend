@@ -3,7 +3,7 @@ import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
 import { PrismaService } from '../prisma/prisma.service';
 import { HyperLiquidInfoService } from './hyperliquid-info.service';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../../generated/prisma/client';
 
 const CACHE_TTL_MINUTES = 30;
 

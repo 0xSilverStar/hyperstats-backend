@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { HyperLiquidInfoService } from './hyperliquid-info.service';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../../generated/prisma/client';
 
 // HyperLiquid API returns max 500 elements per request
 const MAX_RESULTS_PER_REQUEST = 500;

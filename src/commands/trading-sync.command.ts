@@ -1,7 +1,7 @@
 import { Command, CommandRunner, Option } from 'nest-commander';
 import { PrismaService } from '../prisma/prisma.service';
 import { HyperLiquidInfoService } from '../services/hyperliquid-info.service';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../../generated/prisma/client';
 import { ConsoleLogger } from '../common/utils/console-logger';
 
 interface TradingSyncOptions {
