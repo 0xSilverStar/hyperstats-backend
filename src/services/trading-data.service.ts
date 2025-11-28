@@ -3,6 +3,9 @@ import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
 import { PrismaService } from '../prisma/prisma.service';
 import { HyperLiquidInfoService } from './hyperliquid-info.service';
+import { WalletSyncLockService } from './wallet-sync-lock.service';
+import { LedgerSyncService } from './ledger-sync.service';
+import { FillSyncService } from './fill-sync.service';
 import { Prisma } from '../../generated/prisma/client';
 
 const CACHE_TTL_MINUTES = 30;
@@ -16,6 +19,9 @@ export class TradingDataService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly hlService: HyperLiquidInfoService,
+    private readonly syncLock: WalletSyncLockService,
+    private readonly ledgerSyncService: LedgerSyncService,
+    private readonly fillSyncService: FillSyncService,
     @InjectQueue('trading-data') private readonly tradingDataQueue: Queue,
   ) {}
 
@@ -180,6 +186,163 @@ export class TradingDataService {
     });
 
     return this.transformProfileResponse(normalizedAddress, profile);
+  }
+
+  /**
+   * Get wallet data with synchronous sync if cache is invalid.
+   * Uses lock to prevent duplicate syncs for the same wallet.
+   * Returns positions, orders, and balances together.
+   * Also starts background sync for trades and ledger.
+   */
+  async getWalletDataSync(address: string) {
+    const normalizedAddress = address.toLowerCase();
+
+    const data = await this.syncLock.acquireLock(normalizedAddress, async () => {
+      await this.ensureWalletExists(normalizedAddress);
+
+      // Check if cache is valid
+      if (await this.isCacheValid(normalizedAddress, 'profile')) {
+        this.logger.debug(`Cache hit for wallet data: ${normalizedAddress}`);
+        return this.getWalletDataFromDb(normalizedAddress);
+      }
+
+      // Sync first, then return
+      this.logger.debug(`Cache miss, syncing wallet: ${normalizedAddress}`);
+      await this.fullSync(normalizedAddress);
+
+      return this.getWalletDataFromDb(normalizedAddress);
+    });
+
+    // Start background sync for trades and ledger (non-blocking)
+    this.startBackgroundSync(normalizedAddress);
+
+    return data;
+  }
+
+  /**
+   * Start background sync for trades and ledger
+   */
+  private startBackgroundSync(address: string) {
+    // Non-blocking background sync
+    Promise.all([
+      this.fillSyncService.syncFills(address).catch((e) => this.logger.error(`Fill sync error: ${e.message}`)),
+      this.ledgerSyncService.syncLedgerUpdates(address).catch((e) => this.logger.error(`Ledger sync error: ${e.message}`)),
+    ]);
+  }
+
+  /**
+   * Get sync status for a wallet (lightweight endpoint for polling)
+   */
+  async getSyncStatus(address: string) {
+    const normalizedAddress = address.toLowerCase();
+
+    const [tradesCount, ledgerCount, fillSyncStatus, ledgerSyncStatus] = await Promise.all([
+      this.prisma.fill.count({ where: { wallet_address: normalizedAddress } }),
+      this.prisma.ledgerUpdate.count({ where: { wallet_address: normalizedAddress } }),
+      this.prisma.fillSyncStatus.findUnique({ where: { wallet_address: normalizedAddress } }),
+      this.prisma.ledgerSyncStatus.findUnique({ where: { wallet_address: normalizedAddress } }),
+    ]);
+
+    // Determine if sync is needed/in progress
+    const tradesSyncing = fillSyncStatus?.is_syncing || (!fillSyncStatus?.last_synced_at && tradesCount === 0);
+    const ledgerSyncing = ledgerSyncStatus?.is_syncing || (!ledgerSyncStatus?.last_synced_at && ledgerCount === 0);
+
+    return {
+      address: normalizedAddress,
+      trades: {
+        count: tradesCount,
+        syncing: tradesSyncing,
+        syncedAt: fillSyncStatus?.last_synced_at ?? null,
+      },
+      ledger: {
+        count: ledgerCount,
+        syncing: ledgerSyncing,
+        syncedAt: ledgerSyncStatus?.last_synced_at ?? null,
+      },
+    };
+  }
+
+  private async getWalletDataFromDb(address: string) {
+    const [wallet, positions, orders, balances, cache, tradesCount, ledgerCount, fillSyncStatus, ledgerSyncStatus] = await Promise.all([
+      this.prisma.wallet.findUnique({ where: { address } }),
+      this.prisma.position.findMany({ where: { wallet_address: address } }),
+      this.prisma.order.findMany({ where: { wallet_address: address, status: 'open' } }),
+      this.prisma.balance.findMany({ where: { wallet_address: address } }),
+      this.prisma.cache.findUnique({
+        where: { wallet_address_cache_type: { wallet_address: address, cache_type: 'profile' } },
+      }),
+      this.prisma.fill.count({ where: { wallet_address: address } }),
+      this.prisma.ledgerUpdate.count({ where: { wallet_address: address } }),
+      this.prisma.fillSyncStatus.findUnique({ where: { wallet_address: address } }),
+      this.prisma.ledgerSyncStatus.findUnique({ where: { wallet_address: address } }),
+    ]);
+
+    const totalUnrealizedPnl = positions.reduce((sum, p) => sum + parseFloat(p.unrealized_pnl.toString()), 0);
+    const totalPositionValue = positions.reduce((sum, p) => sum + parseFloat(p.position_value.toString()), 0);
+    const totalMarginUsed = positions.reduce((sum, p) => sum + parseFloat(p.margin_used.toString()), 0);
+
+    return {
+      address,
+      wallet: wallet
+        ? {
+            totalDeposit: wallet.total_deposit,
+            totalWithdraw: wallet.total_withdraw,
+            netDeposit: parseFloat(wallet.total_deposit.toString()) - parseFloat(wallet.total_withdraw.toString()),
+            transactionCount: wallet.transaction_count,
+            firstSeenAt: wallet.first_seen_at,
+            lastActivityAt: wallet.last_activity_at,
+          }
+        : null,
+      positions: positions.map((p) => ({
+        coin: p.coin,
+        size: p.position_size.toString(),
+        side: p.side,
+        leverage: p.leverage,
+        entryPrice: p.entry_price.toString(),
+        markPrice: p.mark_price.toString(),
+        positionValue: p.position_value.toString(),
+        unrealizedPnl: p.unrealized_pnl.toString(),
+        returnOnEquity: p.return_on_equity?.toString() ?? null,
+        liquidationPrice: p.liquidation_price?.toString() ?? null,
+        marginUsed: p.margin_used.toString(),
+      })),
+      orders: orders.map((o) => ({
+        orderId: o.order_id.toString(),
+        coin: o.coin,
+        side: o.side,
+        orderType: o.order_type,
+        limitPrice: o.limit_price?.toString() ?? null,
+        size: o.size.toString(),
+        reduceOnly: o.reduce_only,
+        timestamp: o.order_timestamp.toString(),
+      })),
+      balances: balances.map((b) => ({
+        coin: b.coin,
+        total: b.total_balance.toString(),
+        hold: b.hold_balance.toString(),
+        available: b.available_balance.toString(),
+        entryValue: b.entry_value?.toString() ?? null,
+      })),
+      summary: {
+        positionsCount: positions.length,
+        longCount: positions.filter((p) => p.side === 'long').length,
+        shortCount: positions.filter((p) => p.side === 'short').length,
+        totalUnrealizedPnl,
+        totalPositionValue,
+        totalMarginUsed,
+        openOrdersCount: orders.length,
+        balancesCount: balances.length,
+      },
+      trades: {
+        count: tradesCount,
+        syncing: fillSyncStatus?.is_syncing || (!fillSyncStatus?.last_synced_at && tradesCount === 0),
+      },
+      ledger: {
+        count: ledgerCount,
+        syncing: ledgerSyncStatus?.is_syncing || (!ledgerSyncStatus?.last_synced_at && ledgerCount === 0),
+      },
+      syncedAt: cache?.synced_at ?? null,
+    };
   }
 
   // Database read methods

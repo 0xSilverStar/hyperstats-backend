@@ -80,8 +80,8 @@ export class TradingSyncCommand extends CommandRunner {
           failCount++;
         }
 
-        // Small delay to avoid rate limiting
-        await this.sleep(100);
+        // 15 second delay to avoid rate limiting
+        await this.sleep(15000);
       }
 
       const duration = Date.now() - startTime;
@@ -104,11 +104,9 @@ export class TradingSyncCommand extends CommandRunner {
       return [options.address];
     }
 
-    const limit = options?.limit ?? 10;
-
     const wallets = await this.prisma.wallet.findMany({
       orderBy: { total_deposit: 'desc' },
-      take: limit,
+      ...(options?.limit && { take: options.limit }),
       select: { address: true },
     });
 
@@ -380,7 +378,7 @@ export class TradingSyncCommand extends CommandRunner {
 
   @Option({
     flags: '-l, --limit <limit>',
-    description: 'Number of wallets to sync (default: 10)',
+    description: 'Number of wallets to sync (default: all)',
   })
   parseLimit(val: string): number {
     return parseInt(val, 10);

@@ -1,6 +1,7 @@
 import { Controller, Get, Param, Query, HttpException, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletDetectionService } from '../services/wallet-detection.service';
+import { TradingDataService } from '../services/trading-data.service';
 import { GetWalletsDto } from '../common/dto';
 
 @Controller('v1/wallets')
@@ -8,6 +9,7 @@ export class WalletController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly walletService: WalletDetectionService,
+    private readonly tradingDataService: TradingDataService,
   ) {}
 
   @Get('stats')
@@ -67,21 +69,21 @@ export class WalletController {
 
   @Get(':address')
   async show(@Param('address') address: string) {
-    const details = await this.walletService.getWalletDetails(address);
-
-    if (!details) {
-      throw new HttpException(
-        {
-          success: false,
-          message: 'Wallet not found',
-        },
-        HttpStatus.NOT_FOUND,
-      );
-    }
+    const data = await this.tradingDataService.getWalletDataSync(address);
 
     return {
       success: true,
-      data: details,
+      data,
+    };
+  }
+
+  @Get(':address/sync-status')
+  async syncStatus(@Param('address') address: string) {
+    const status = await this.tradingDataService.getSyncStatus(address);
+
+    return {
+      success: true,
+      data: status,
     };
   }
 }

@@ -8,7 +8,15 @@ import { PrismaModule } from './prisma/prisma.module';
 import { WalletController, TransactionController, SyncStatusController, TradingController } from './controllers';
 
 // Services
-import { HyperLiquidInfoService, ArbitrumSyncService, WalletDetectionService, TradingDataService, LedgerSyncService, FillSyncService } from './services';
+import {
+  HyperLiquidInfoService,
+  ArbitrumSyncService,
+  WalletDetectionService,
+  TradingDataService,
+  LedgerSyncService,
+  FillSyncService,
+  WalletSyncLockService,
+} from './services';
 
 // Queue
 import { TradingDataProcessor } from './queue';
@@ -56,6 +64,7 @@ import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './
     HyperLiquidInfoService,
     ArbitrumSyncService,
     WalletDetectionService,
+    WalletSyncLockService,
     TradingDataService,
     LedgerSyncService,
     FillSyncService,

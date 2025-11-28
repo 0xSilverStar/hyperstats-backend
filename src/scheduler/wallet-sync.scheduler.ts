@@ -1,164 +1,108 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
-import { InjectQueue } from '@nestjs/bull';
-import type { Queue } from 'bull';
 import { PrismaService } from '../prisma/prisma.service';
+import { TradingDataService } from '../services/trading-data.service';
+import { ArbitrumSyncService } from '../services/arbitrum-sync.service';
 
 @Injectable()
 export class WalletSyncScheduler implements OnModuleInit {
   private readonly logger = new Logger(WalletSyncScheduler.name);
-  private isSyncing = false;
-  private syncAborted = false;
+  private isWalletSyncing = false;
+  private isBlockchainSyncing = false;
 
   constructor(
     private readonly prisma: PrismaService,
-    @InjectQueue('trading-data') private readonly tradingDataQueue: Queue,
+    private readonly tradingDataService: TradingDataService,
+    private readonly arbitrumSyncService: ArbitrumSyncService,
   ) {}
 
   async onModuleInit() {
     this.logger.log('WalletSyncScheduler initialized');
+
+    // Start background sync tasks after a short delay
+    setTimeout(() => {
+      this.startContinuousWalletSync();
+      this.startContinuousBlockchainSync();
+    }, 5000);
   }
 
   /**
-   * Daily cron job that syncs all wallets
-   * Runs at midnight (00:00) every day
-   * Iterates through all wallets with 1-second interval between each
+   * Continuous wallet sync - 15 seconds interval between each wallet
    */
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
-  async handleDailySync() {
-    if (this.isSyncing) {
-      this.logger.warn('Daily sync already in progress, skipping...');
-      return;
-    }
+  private async startContinuousWalletSync() {
+    this.logger.log('Starting continuous wallet sync...');
 
-    this.isSyncing = true;
-    this.syncAborted = false;
-    this.logger.log('Starting daily wallet sync...');
+    while (true) {
+      if (this.isWalletSyncing) {
+        await this.sleep(5000);
+        continue;
+      }
 
-    try {
-      const startTime = Date.now();
-      const wallets = await this.prisma.wallet.findMany({
-        select: { address: true },
-        orderBy: { last_activity_at: 'asc' }, // Sync oldest first
-      });
+      this.isWalletSyncing = true;
 
-      const totalWallets = wallets.length;
-      this.logger.log(`Found ${totalWallets} wallets to sync`);
+      try {
+        const wallets = await this.prisma.wallet.findMany({
+          select: { address: true },
+          orderBy: { last_activity_at: 'asc' },
+        });
 
-      let successCount = 0;
-      let errorCount = 0;
+        this.logger.log(`Wallet sync cycle starting: ${wallets.length} wallets`);
 
-      for (let i = 0; i < wallets.length; i++) {
-        if (this.syncAborted) {
-          this.logger.warn('Daily sync aborted');
-          break;
-        }
-
-        const wallet = wallets[i];
-
-        try {
-          // Add to queue for processing
-          await this.tradingDataQueue.add(
-            'full-sync',
-            { address: wallet.address },
-            {
-              attempts: 3,
-              backoff: {
-                type: 'exponential',
-                delay: 2000,
-              },
-              removeOnComplete: true,
-              removeOnFail: false,
-            },
-          );
-
-          successCount++;
-
-          // Log progress every 100 wallets
-          if ((i + 1) % 100 === 0) {
-            const progress = (((i + 1) / totalWallets) * 100).toFixed(2);
-            const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(2);
-            this.logger.log(`Progress: ${i + 1}/${totalWallets} (${progress}%) - Elapsed: ${elapsed} min`);
+        for (const wallet of wallets) {
+          try {
+            await this.tradingDataService.fullSync(wallet.address);
+            this.logger.debug(`Synced wallet: ${wallet.address.slice(0, 10)}...`);
+          } catch (error) {
+            this.logger.error(`Failed to sync ${wallet.address}: ${error.message}`);
           }
 
-          // Wait 5 seconds before next wallet to avoid rate limiting
-          await this.sleep(5000);
-        } catch (error) {
-          errorCount++;
-          this.logger.error(`Failed to queue sync for wallet ${wallet.address}: ${error.message}`);
+          // 15 second interval between wallets
+          await this.sleep(15000);
         }
+
+        this.logger.log('Wallet sync cycle completed');
+      } catch (error) {
+        this.logger.error(`Wallet sync error: ${error.message}`);
+      } finally {
+        this.isWalletSyncing = false;
       }
 
-      const totalTime = ((Date.now() - startTime) / 1000 / 60).toFixed(2);
-      this.logger.log(`Daily sync completed: ${successCount} queued, ${errorCount} errors, ${totalTime} minutes`);
-    } catch (error) {
-      this.logger.error(`Daily sync failed: ${error.message}`);
-    } finally {
-      this.isSyncing = false;
+      // Short pause before starting next cycle
+      await this.sleep(5000);
     }
   }
 
   /**
-   * Manual trigger for wallet sync
-   * Can be called via API or CLI command
+   * Continuous blockchain sync - 5 minute interval
    */
-  async triggerManualSync(limit?: number): Promise<{ queued: number; total: number }> {
-    if (this.isSyncing) {
-      throw new Error('Sync already in progress');
-    }
+  private async startContinuousBlockchainSync() {
+    this.logger.log('Starting continuous blockchain sync...');
 
-    this.isSyncing = true;
-    this.syncAborted = false;
-
-    try {
-      const wallets = await this.prisma.wallet.findMany({
-        select: { address: true },
-        orderBy: { last_activity_at: 'asc' },
-        take: limit,
-      });
-
-      let queued = 0;
-      for (const wallet of wallets) {
-        if (this.syncAborted) break;
-
-        await this.tradingDataQueue.add(
-          'full-sync',
-          { address: wallet.address },
-          {
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 2000 },
-            removeOnComplete: true,
-          },
-        );
-        queued++;
-
-        // 5 second interval to avoid rate limiting
+    while (true) {
+      if (this.isBlockchainSyncing) {
         await this.sleep(5000);
+        continue;
       }
 
-      return { queued, total: wallets.length };
-    } finally {
-      this.isSyncing = false;
+      this.isBlockchainSyncing = true;
+
+      try {
+        await this.arbitrumSyncService.sync();
+        this.logger.debug('Blockchain sync completed');
+      } catch (error) {
+        this.logger.error(`Blockchain sync error: ${error.message}`);
+      } finally {
+        this.isBlockchainSyncing = false;
+      }
+
+      // 5 minute interval
+      await this.sleep(300000);
     }
   }
 
-  /**
-   * Abort the current sync operation
-   */
-  abortSync(): void {
-    if (this.isSyncing) {
-      this.syncAborted = true;
-      this.logger.warn('Sync abort requested');
-    }
-  }
-
-  /**
-   * Get current sync status
-   */
-  getSyncStatus(): { isSyncing: boolean; syncAborted: boolean } {
+  getSyncStatus() {
     return {
-      isSyncing: this.isSyncing,
-      syncAborted: this.syncAborted,
+      isWalletSyncing: this.isWalletSyncing,
+      isBlockchainSyncing: this.isBlockchainSyncing,
     };
   }
 
