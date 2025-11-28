@@ -15,11 +15,6 @@ dist
 *.swp
 *.swo
 
-# Environment
-.env
-.env.local
-.env.*.local
-
 # Test
 coverage
 .nyc_output
