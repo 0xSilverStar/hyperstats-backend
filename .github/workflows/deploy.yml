@@ -85,7 +85,11 @@ jobs:
 
             # Build and deploy with error checking
             echo "Building and deploying application..."
-            if ! docker-compose up -d --build; then
+            if ! docker-compose build --no-cache; then
+              echo "ERROR: Docker build failed!"
+              exit 1
+            fi
+            if ! docker-compose up -d; then
               echo "ERROR: Docker build/deploy failed!"
               echo "Checking Docker logs..."
               docker-compose logs --tail=50 app

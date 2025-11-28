@@ -19,7 +19,7 @@ RUN npm ci
 RUN npx prisma generate
 
 # Build the application
-RUN npm run build
+RUN npm run build && ls -la dist/ && test -f dist/main.js
 
 # Expose port
 EXPOSE 9000
