@@ -7,6 +7,11 @@ import { WalletSyncLockService } from './wallet-sync-lock.service';
 import { LedgerSyncService } from './ledger-sync.service';
 import { FillSyncService } from './fill-sync.service';
 import { Prisma } from '../../generated/prisma/client';
+import {
+  getDailyKey,
+  getHourlyKey,
+  utcFromString,
+} from '../lib/dayjs';
 
 const CACHE_TTL_MINUTES = 30;
 
@@ -1002,40 +1007,16 @@ export class TradingDataService {
   }
 
   /**
-   * Get ISO week number and year for a date (uses UTC consistently)
-   * Returns { year, week } where year is the ISO week-year (can differ from calendar year)
-   */
-  private getISOWeekAndYear(date: Date): { year: number; week: number } {
-    // Create UTC date to avoid timezone issues
-    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-    const dayNum = d.getUTCDay() || 7;
-    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-    // ISO week-year is the year of the Thursday of that week
-    const isoYear = d.getUTCFullYear();
-    const yearStart = new Date(Date.UTC(isoYear, 0, 1));
-    const week = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-    return { year: isoYear, week };
-  }
-
-  /**
-   * Get aggregation key based on period (uses UTC consistently)
+   * Get aggregation key based on period using dayjs wrapper (UTC consistently)
    * - 1h, 24h: hourly aggregation
-   * - 7d, 30d: daily aggregation
-   * - 3m, 1y, all: weekly aggregation for performance
+   * - 7d, 30d, 3m, 1y, all: daily aggregation
    */
-  private getAggregationKey(date: Date, period: string): string {
+  private getAggregationKey(timestamp: number, period: string): string {
     if (period === '1h' || period === '24h') {
-      // Hourly: YYYY-MM-DD HH:00 (UTC)
-      const dateStr = date.toISOString().split('T')[0];
-      const hour = date.getUTCHours().toString().padStart(2, '0');
-      return `${dateStr} ${hour}:00`;
-    } else if (period === '7d' || period === '30d') {
-      // Daily: YYYY-MM-DD (UTC)
-      return date.toISOString().split('T')[0];
+      return getHourlyKey(timestamp);
     } else {
-      // Weekly for 3m, 1y, all: YYYY-WXX (using ISO week-year)
-      const { year, week } = this.getISOWeekAndYear(date);
-      return `${year}-W${week.toString().padStart(2, '0')}`;
+      // Daily aggregation for all other periods (7d, 30d, 3m, 1y, all)
+      return getDailyKey(timestamp);
     }
   }
 
@@ -1048,8 +1029,7 @@ export class TradingDataService {
 
     for (const trade of trades) {
       const timestamp = Number(trade.fill_timestamp);
-      const date = new Date(timestamp);
-      const key = this.getAggregationKey(date, period);
+      const key = this.getAggregationKey(timestamp, period);
 
       const current = aggregatedPnl.get(key) || { pnl: 0, volume: 0, trades: 0 };
       const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
@@ -1067,8 +1047,7 @@ export class TradingDataService {
       if (fill.closed_pnl !== null) continue; // Already counted
 
       const timestamp = Number(fill.fill_timestamp);
-      const date = new Date(timestamp);
-      const key = this.getAggregationKey(date, period);
+      const key = this.getAggregationKey(timestamp, period);
 
       const current = aggregatedPnl.get(key) || { pnl: 0, volume: 0, trades: 0 };
       const volume = parseFloat(fill.price?.toString() ?? '0') * parseFloat(fill.size?.toString() ?? '0');
@@ -1081,25 +1060,6 @@ export class TradingDataService {
     }
 
     return aggregatedPnl;
-  }
-
-  /**
-   * Convert ISO week string (YYYY-WXX) to a date representing the Monday of that week (UTC)
-   */
-  private weekStringToDate(weekStr: string): Date {
-    const [yearStr, weekPart] = weekStr.split('-W');
-    const year = parseInt(yearStr, 10);
-    const week = parseInt(weekPart, 10);
-    // Get Jan 4th of the year in UTC (always in week 1 per ISO 8601)
-    const jan4 = new Date(Date.UTC(year, 0, 4));
-    // Get Monday of week 1 (ISO week starts on Monday)
-    const dayOfWeek = jan4.getUTCDay() || 7; // Convert Sunday=0 to 7
-    const week1Monday = new Date(jan4);
-    week1Monday.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
-    // Add (week - 1) * 7 days to get to the target week's Monday
-    const targetDate = new Date(week1Monday);
-    targetDate.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
-    return targetDate;
   }
 
   private generateChartDataForPeriod(
@@ -1115,7 +1075,7 @@ export class TradingDataService {
       trades: number;
     }> = [];
 
-    // Sort keys
+    // Sort keys chronologically
     const sortedKeys = Array.from(aggregatedPnl.keys()).sort();
 
     // Calculate cumulative P&L
@@ -1125,20 +1085,16 @@ export class TradingDataService {
       const data = aggregatedPnl.get(key)!;
       cumulativePnl += data.pnl;
 
-      // Format time label based on period and key format
+      // Format time label based on period using dayjs
       let timeLabel: string;
       if (period === '1h' || period === '24h') {
         // For hourly data (YYYY-MM-DD HH:00), show hour
         const parts = key.split(' ');
         timeLabel = parts[1] || key;
-      } else if (period === '7d' || period === '30d') {
-        // For daily data (YYYY-MM-DD), show date
-        const date = new Date(key);
-        timeLabel = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       } else {
-        // For weekly data (YYYY-WXX), show week range
-        const weekDate = this.weekStringToDate(key);
-        timeLabel = weekDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        // For daily data (YYYY-MM-DD), parse and format using dayjs UTC
+        const d = utcFromString(key);
+        timeLabel = d.format('MMM D');
       }
 
       chartData.push({
