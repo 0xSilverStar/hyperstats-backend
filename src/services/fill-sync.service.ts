@@ -29,6 +29,39 @@ interface FillFromApi {
   feeToken?: string;
 }
 
+// Individual fill record stored in JSON
+export interface IndividualFillRecord {
+  order_id: number;
+  coin: string;
+  side: string;
+  price: string;
+  size: string;
+  direction: string | null;
+  closed_pnl: string | null;
+  fee: string | null;
+  fee_token: string | null;
+  start_position: string | null;
+  crossed: boolean;
+  tid: number | null;
+  timestamp: number;
+}
+
+// Grouped fill statistics
+interface GroupedFillData {
+  wallet_address: string;
+  tx_hash: string;
+  coin: string;
+  side: string;
+  total_size: number;
+  avg_price: number;
+  total_value: number;
+  total_pnl: number | null;
+  total_fee: number | null;
+  fill_count: number;
+  records: IndividualFillRecord[];
+  fill_timestamp: bigint;
+}
+
 @Injectable()
 export class FillSyncService {
   private readonly logger = new Logger(FillSyncService.name);
@@ -219,56 +252,151 @@ export class FillSyncService {
   }
 
   /**
-   * Save fills to database
+   * Group fills by tx_hash and calculate statistics
+   */
+  private groupFillsByTxHash(address: string, fills: FillFromApi[]): GroupedFillData[] {
+    const normalizedAddress = address.toLowerCase();
+    const groupedMap = new Map<string, FillFromApi[]>();
+
+    // Group fills by tx_hash
+    for (const fill of fills) {
+      const existing = groupedMap.get(fill.hash) || [];
+      existing.push(fill);
+      groupedMap.set(fill.hash, existing);
+    }
+
+    // Calculate statistics for each group
+    const groupedFills: GroupedFillData[] = [];
+
+    for (const [txHash, txFills] of groupedMap) {
+      // Calculate total size and total value for weighted average
+      let totalSize = 0;
+      let totalValue = 0;
+      let totalPnl = 0;
+      let totalFee = 0;
+      let hasPnl = false;
+      let hasFee = false;
+
+      // Determine side: 'buy', 'sell', or 'mixed'
+      const sides = new Set(txFills.map((f) => f.side));
+      let side: string;
+      if (sides.size === 1) {
+        side = sides.has('B') ? 'buy' : 'sell';
+      } else {
+        side = 'mixed';
+      }
+
+      // Use the first fill's coin (assuming same tx_hash has same coin)
+      const coin = txFills[0].coin;
+
+      // Build individual records and calculate totals
+      const records: IndividualFillRecord[] = [];
+      let minTimestamp = BigInt(txFills[0].time);
+
+      for (const fill of txFills) {
+        const size = parseFloat(fill.sz);
+        const price = parseFloat(fill.px);
+
+        totalSize += size;
+        totalValue += size * price;
+
+        if (fill.closedPnl) {
+          totalPnl += parseFloat(fill.closedPnl);
+          hasPnl = true;
+        }
+
+        if (fill.fee) {
+          totalFee += parseFloat(fill.fee);
+          hasFee = true;
+        }
+
+        // Track minimum timestamp
+        if (BigInt(fill.time) < minTimestamp) {
+          minTimestamp = BigInt(fill.time);
+        }
+
+        // Create individual record
+        records.push({
+          order_id: fill.oid,
+          coin: fill.coin,
+          side: fill.side === 'B' ? 'buy' : 'sell',
+          price: fill.px,
+          size: fill.sz,
+          direction: fill.dir || null,
+          closed_pnl: fill.closedPnl || null,
+          fee: fill.fee || null,
+          fee_token: fill.feeToken || null,
+          start_position: fill.startPosition || null,
+          crossed: fill.crossed,
+          tid: fill.tid || null,
+          timestamp: fill.time,
+        });
+      }
+
+      // Calculate weighted average price
+      const avgPrice = totalSize > 0 ? totalValue / totalSize : 0;
+
+      groupedFills.push({
+        wallet_address: normalizedAddress,
+        tx_hash: txHash,
+        coin,
+        side,
+        total_size: totalSize,
+        avg_price: avgPrice,
+        total_value: totalValue,
+        total_pnl: hasPnl ? totalPnl : null,
+        total_fee: hasFee ? totalFee : null,
+        fill_count: txFills.length,
+        records,
+        fill_timestamp: minTimestamp,
+      });
+    }
+
+    return groupedFills;
+  }
+
+  /**
+   * Save fills to database (grouped by tx_hash)
    */
   private async saveFills(address: string, fills: FillFromApi[]): Promise<void> {
-    const normalizedAddress = address.toLowerCase();
+    const groupedFills = this.groupFillsByTxHash(address, fills);
 
-    for (const fill of fills) {
+    for (const grouped of groupedFills) {
       try {
         await this.prisma.fill.upsert({
           where: {
-            tx_hash_order_id_fill_timestamp: {
-              tx_hash: fill.hash,
-              order_id: BigInt(fill.oid),
-              fill_timestamp: BigInt(fill.time),
-            },
+            tx_hash: grouped.tx_hash,
           },
           update: {
-            coin: fill.coin,
-            side: fill.side,
-            price: new Prisma.Decimal(fill.px),
-            size: new Prisma.Decimal(fill.sz),
-            direction: fill.dir || null,
-            closed_pnl: fill.closedPnl ? new Prisma.Decimal(fill.closedPnl) : null,
-            fee: fill.fee ? new Prisma.Decimal(fill.fee) : null,
-            fee_token: fill.feeToken ?? null,
-            start_position: fill.startPosition ? new Prisma.Decimal(fill.startPosition) : null,
-            crossed: fill.crossed,
-            tid: fill.tid ? BigInt(fill.tid) : null,
+            coin: grouped.coin,
+            side: grouped.side,
+            total_size: new Prisma.Decimal(grouped.total_size),
+            avg_price: new Prisma.Decimal(grouped.avg_price),
+            total_value: new Prisma.Decimal(grouped.total_value),
+            total_pnl: grouped.total_pnl !== null ? new Prisma.Decimal(grouped.total_pnl) : null,
+            total_fee: grouped.total_fee !== null ? new Prisma.Decimal(grouped.total_fee) : null,
+            fill_count: grouped.fill_count,
+            records: grouped.records as unknown as Prisma.InputJsonValue,
           },
           create: {
-            wallet_address: normalizedAddress,
-            tx_hash: fill.hash,
-            order_id: BigInt(fill.oid),
-            coin: fill.coin,
-            side: fill.side,
-            price: new Prisma.Decimal(fill.px),
-            size: new Prisma.Decimal(fill.sz),
-            direction: fill.dir || null,
-            closed_pnl: fill.closedPnl ? new Prisma.Decimal(fill.closedPnl) : null,
-            fee: fill.fee ? new Prisma.Decimal(fill.fee) : null,
-            fee_token: fill.feeToken ?? null,
-            start_position: fill.startPosition ? new Prisma.Decimal(fill.startPosition) : null,
-            crossed: fill.crossed,
-            fill_timestamp: BigInt(fill.time),
-            tid: fill.tid ? BigInt(fill.tid) : null,
+            wallet_address: grouped.wallet_address,
+            tx_hash: grouped.tx_hash,
+            coin: grouped.coin,
+            side: grouped.side,
+            total_size: new Prisma.Decimal(grouped.total_size),
+            avg_price: new Prisma.Decimal(grouped.avg_price),
+            total_value: new Prisma.Decimal(grouped.total_value),
+            total_pnl: grouped.total_pnl !== null ? new Prisma.Decimal(grouped.total_pnl) : null,
+            total_fee: grouped.total_fee !== null ? new Prisma.Decimal(grouped.total_fee) : null,
+            fill_count: grouped.fill_count,
+            records: grouped.records as unknown as Prisma.InputJsonValue,
+            fill_timestamp: grouped.fill_timestamp,
           },
         });
       } catch (error) {
-        this.logger.warn(`Failed to save fill for ${normalizedAddress}`, {
-          hash: fill.hash,
-          time: fill.time,
+        this.logger.warn(`Failed to save grouped fill for ${grouped.wallet_address}`, {
+          tx_hash: grouped.tx_hash,
+          fill_count: grouped.fill_count,
           error: error.message,
         });
       }
@@ -301,19 +429,16 @@ export class FillSyncService {
       id: f.id,
       wallet_address: f.wallet_address,
       tx_hash: f.tx_hash,
-      order_id: f.order_id?.toString() ?? null,
       coin: f.coin,
       side: f.side,
-      price: f.price.toString(),
-      size: f.size.toString(),
-      direction: f.direction,
-      closed_pnl: f.closed_pnl?.toString() ?? null,
-      fee: f.fee?.toString() ?? null,
-      fee_token: f.fee_token,
-      start_position: f.start_position?.toString() ?? null,
-      crossed: f.crossed,
+      total_size: f.total_size.toString(),
+      avg_price: f.avg_price.toString(),
+      total_value: f.total_value.toString(),
+      total_pnl: f.total_pnl?.toString() ?? null,
+      total_fee: f.total_fee?.toString() ?? null,
+      fill_count: f.fill_count,
+      records: f.records as unknown as IndividualFillRecord[],
       fill_timestamp: f.fill_timestamp.toString(),
-      tid: f.tid?.toString() ?? null,
     }));
 
     return {
@@ -337,26 +462,33 @@ export class FillSyncService {
     // First, ensure data is synced
     await this.syncFills(normalizedAddress);
 
-    const [totalCount, buyCount, sellCount, totalVolume, totalPnl, totalFees, firstFill, lastFill] = await Promise.all([
+    const [txCount, buyTxCount, sellTxCount, totalFillCount, totalVolume, totalPnl, totalFees, firstFill, lastFill] = await Promise.all([
+      // Count of grouped transactions (tx_hash)
       this.prisma.fill.count({
         where: { wallet_address: normalizedAddress },
       }),
       this.prisma.fill.count({
-        where: { wallet_address: normalizedAddress, side: 'B' },
+        where: { wallet_address: normalizedAddress, side: 'buy' },
       }),
       this.prisma.fill.count({
-        where: { wallet_address: normalizedAddress, side: 'A' },
+        where: { wallet_address: normalizedAddress, side: 'sell' },
       }),
-      this.prisma.$queryRaw<[{ total: Prisma.Decimal | null }]>`
-        SELECT SUM(price * size) as total FROM fills WHERE wallet_address = ${normalizedAddress}
-      `,
+      // Sum of all individual fills
       this.prisma.fill.aggregate({
         where: { wallet_address: normalizedAddress },
-        _sum: { closed_pnl: true },
+        _sum: { fill_count: true },
       }),
       this.prisma.fill.aggregate({
         where: { wallet_address: normalizedAddress },
-        _sum: { fee: true },
+        _sum: { total_value: true },
+      }),
+      this.prisma.fill.aggregate({
+        where: { wallet_address: normalizedAddress },
+        _sum: { total_pnl: true },
+      }),
+      this.prisma.fill.aggregate({
+        where: { wallet_address: normalizedAddress },
+        _sum: { total_fee: true },
       }),
       this.prisma.fill.findFirst({
         where: { wallet_address: normalizedAddress },
@@ -370,9 +502,10 @@ export class FillSyncService {
       }),
     ]);
 
-    const totalVolumeNum = totalVolume[0]?.total?.toNumber() ?? 0;
-    const totalPnlNum = totalPnl._sum.closed_pnl?.toNumber() ?? 0;
-    const totalFeesNum = totalFees._sum.fee?.toNumber() ?? 0;
+    const totalFillCountNum = totalFillCount._sum.fill_count ?? 0;
+    const totalVolumeNum = totalVolume._sum.total_value?.toNumber() ?? 0;
+    const totalPnlNum = totalPnl._sum.total_pnl?.toNumber() ?? 0;
+    const totalFeesNum = totalFees._sum.total_fee?.toNumber() ?? 0;
 
     const firstTime = firstFill ? Number(firstFill.fill_timestamp) : null;
     const lastTime = lastFill ? Number(lastFill.fill_timestamp) : null;
@@ -384,9 +517,10 @@ export class FillSyncService {
 
     return {
       address: normalizedAddress,
-      total_count: totalCount,
-      buy_count: buyCount,
-      sell_count: sellCount,
+      tx_count: txCount, // Number of unique transactions
+      total_fill_count: totalFillCountNum, // Total individual fills
+      buy_tx_count: buyTxCount,
+      sell_tx_count: sellTxCount,
       total_volume: totalVolumeNum,
       total_pnl: totalPnlNum,
       total_fees: totalFeesNum,

@@ -20,12 +20,15 @@ model Wallet {
   transaction_count Int       @default(0)
   first_seen_at     DateTime?
   last_activity_at  DateTime?
+  is_favorite       Boolean   @default(false)
+  note              String?
   created_at        DateTime  @default(now())
   updated_at        DateTime  @updatedAt
 
   @@index([total_deposit])
   @@index([total_withdraw])
   @@index([last_activity_at])
+  @@index([is_favorite])
   @@map("wallets")
 }
 
@@ -129,32 +132,34 @@ model Order {
   @@map("orders")
 }
 
-// Fill model - stores trade fills
+// Fill model - stores trade fills grouped by tx_hash
 model Fill {
   id             Int      @id @default(autoincrement())
   wallet_address String
-  tx_hash        String
-  order_id       BigInt?
+  tx_hash        String   @unique // one record per tx_hash
   coin           String
-  side           String // 'buy' or 'sell'
-  price          Decimal  @db.Decimal(65, 18)
-  size           Decimal  @db.Decimal(65, 18)
-  direction      String?
-  closed_pnl     Decimal? @db.Decimal(65, 18)
-  fee            Decimal? @db.Decimal(65, 18)
-  fee_token      String?
-  start_position Decimal? @db.Decimal(65, 18)
-  crossed        Boolean  @default(false)
-  fill_timestamp BigInt
-  tid            BigInt?
+  side           String   // 'buy', 'sell', or 'mixed'
+
+  // Aggregated statistics
+  total_size     Decimal  @db.Decimal(65, 18)
+  avg_price      Decimal  @db.Decimal(65, 18)
+  total_value    Decimal  @db.Decimal(65, 18)
+  total_pnl      Decimal? @db.Decimal(65, 18)
+  total_fee      Decimal? @db.Decimal(65, 18)
+  fill_count     Int      @default(1) // number of trades within tx_hash
+
+  // Individual trades JSON
+  records        Json     // array of individual trades
+
+  // Timestamp
+  fill_timestamp BigInt   // first trade timestamp
+
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
 
-  @@unique([tx_hash, order_id, fill_timestamp])
   @@index([wallet_address])
   @@index([coin])
   @@index([fill_timestamp])
-  @@index([order_id])
   @@map("fills")
 }
 
@@ -281,4 +286,79 @@ model FillSyncStatus {
   @@index([last_synced_time])
   @@index([is_syncing])
   @@map("fill_sync_status")
+}
+
+// SyncLock model - prevents concurrent sync command execution
+model SyncLock {
+  id           Int       @id @default(autoincrement())
+  lock_name    String    @unique // e.g., 'hyperliquid:sync', 'trading:sync'
+  locked_by    String?   // hostname or process identifier
+  locked_at    DateTime?
+  expires_at   DateTime? // auto-release after timeout
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  @@index([lock_name])
+  @@index([expires_at])
+  @@map("sync_locks")
+}
+
+// TraderRanking model - stores calculated trader rankings
+model TraderRanking {
+  id               Int       @id @default(autoincrement())
+  wallet_address   String    @unique
+  rank             Int
+  grade            String    // S+, S, A, B, C, D, F
+  score            Decimal   @db.Decimal(20, 4)
+
+  // Performance metrics
+  total_pnl        Decimal   @db.Decimal(65, 18)
+  pnl_24h          Decimal   @db.Decimal(65, 18)
+  pnl_7d           Decimal   @db.Decimal(65, 18)
+  pnl_30d          Decimal   @db.Decimal(65, 18)
+
+  win_rate         Decimal   @db.Decimal(10, 4)
+  total_trades     Int
+  total_volume     Decimal   @db.Decimal(65, 18)
+  avg_trade_size   Decimal   @db.Decimal(65, 18)
+
+  // Position data
+  portfolio_value    Decimal   @db.Decimal(65, 18)
+  active_positions   Int
+  active_orders      Int
+  main_token         String?   // Most traded token
+  avg_position_value Decimal?  @db.Decimal(65, 18) // Average position value
+  long_positions     Int       @default(0) // Number of long positions
+  short_positions    Int       @default(0) // Number of short positions
+
+  // Activity tracking
+  last_trade_at    DateTime?
+  last_activity_at DateTime?
+
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  @@index([rank])
+  @@index([grade])
+  @@index([score])
+  @@index([total_pnl])
+  @@index([portfolio_value])
+  @@index([last_activity_at])
+  @@map("trader_rankings")
+}
+
+// Favourite model - stores user favourited traders
+model Favourite {
+  id             Int      @id @default(autoincrement())
+  user_id        String   // Browser fingerprint or session ID
+  wallet_address String
+  notes          String?
+  added_at       DateTime @default(now())
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@unique([user_id, wallet_address])
+  @@index([user_id])
+  @@index([wallet_address])
+  @@map("favourites")
 }

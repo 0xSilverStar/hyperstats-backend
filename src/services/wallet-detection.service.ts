@@ -64,9 +64,17 @@ export class WalletDetectionService {
 
     try {
       await this.prisma.$transaction(async (tx) => {
-        // Create transaction record
-        await tx.transaction.create({
-          data: {
+        // Upsert transaction record to handle race conditions
+        const result = await tx.transaction.upsert({
+          where: {
+            unique_transfer: {
+              tx_hash: txHash,
+              from_address: from,
+              to_address: to,
+            },
+          },
+          update: {}, // No update needed, just skip if exists
+          create: {
             tx_hash: txHash,
             from_address: from,
             to_address: to,
@@ -77,6 +85,11 @@ export class WalletDetectionService {
             timestamp: new Date(timestamp * 1000),
           },
         });
+
+        // Skip wallet update if transaction already existed (created_at equals updated_at means it was just created)
+        if (result.created_at.getTime() !== result.updated_at.getTime()) {
+          return; // Transaction already existed, skip wallet update
+        }
 
         // Update or create wallet
         const wallet = await tx.wallet.findUnique({

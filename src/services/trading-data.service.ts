@@ -769,48 +769,103 @@ export class TradingDataService {
   }
 
   async saveFills(address: string, fills: any[]): Promise<void> {
+    // Group fills by tx_hash
+    const groupedMap = new Map<string, any[]>();
+    for (const fill of fills.slice(0, 500)) {
+      const hash = fill.hash ?? '';
+      const existing = groupedMap.get(hash) || [];
+      existing.push(fill);
+      groupedMap.set(hash, existing);
+    }
+
     await this.prisma.$transaction(async (tx) => {
-      for (const fill of fills.slice(0, 500)) {
-        const side = (fill.side ?? 'B') === 'B' ? 'buy' : 'sell';
+      for (const [txHash, txFills] of groupedMap) {
+        // Calculate statistics
+        let totalSize = 0;
+        let totalValue = 0;
+        let totalPnl = 0;
+        let totalFee = 0;
+        let hasPnl = false;
+        let hasFee = false;
+
+        // Determine side
+        const sides = new Set(txFills.map((f: any) => f.side));
+        let side: string;
+        if (sides.size === 1) {
+          side = sides.has('B') ? 'buy' : 'sell';
+        } else {
+          side = 'mixed';
+        }
+
+        const coin = txFills[0].coin ?? 'UNKNOWN';
+        const records: any[] = [];
+        let minTimestamp = BigInt(txFills[0].time ?? Date.now());
+
+        for (const fill of txFills) {
+          const size = parseFloat(fill.sz ?? '0');
+          const price = parseFloat(fill.px ?? '0');
+          totalSize += size;
+          totalValue += size * price;
+
+          if (fill.closedPnl) {
+            totalPnl += parseFloat(fill.closedPnl);
+            hasPnl = true;
+          }
+          if (fill.fee) {
+            totalFee += parseFloat(fill.fee);
+            hasFee = true;
+          }
+
+          const fillTime = BigInt(fill.time ?? Date.now());
+          if (fillTime < minTimestamp) {
+            minTimestamp = fillTime;
+          }
+
+          records.push({
+            order_id: fill.oid ?? null,
+            coin: fill.coin ?? 'UNKNOWN',
+            side: fill.side === 'B' ? 'buy' : 'sell',
+            price: fill.px ?? '0',
+            size: fill.sz ?? '0',
+            direction: fill.dir ?? null,
+            closed_pnl: fill.closedPnl ?? null,
+            fee: fill.fee ?? null,
+            fee_token: fill.feeToken ?? null,
+            start_position: fill.startPosition ?? null,
+            crossed: fill.crossed ?? false,
+            tid: fill.tid ?? null,
+            timestamp: fill.time ?? Date.now(),
+          });
+        }
+
+        const avgPrice = totalSize > 0 ? totalValue / totalSize : 0;
 
         await tx.fill.upsert({
-          where: {
-            tx_hash_order_id_fill_timestamp: {
-              tx_hash: fill.hash ?? '',
-              order_id: BigInt(fill.oid ?? 0),
-              fill_timestamp: BigInt(fill.time ?? Date.now()),
-            },
-          },
+          where: { tx_hash: txHash },
           update: {
-            wallet_address: address,
-            coin: fill.coin ?? 'UNKNOWN',
+            coin,
             side,
-            price: new Prisma.Decimal(parseFloat(fill.px ?? '0')),
-            size: new Prisma.Decimal(parseFloat(fill.sz ?? '0')),
-            direction: fill.dir ?? null,
-            closed_pnl: fill.closedPnl ? new Prisma.Decimal(parseFloat(fill.closedPnl)) : null,
-            fee: fill.fee ? new Prisma.Decimal(parseFloat(fill.fee)) : null,
-            fee_token: fill.feeToken ?? 'USDC',
-            start_position: fill.startPosition ? new Prisma.Decimal(parseFloat(fill.startPosition)) : null,
-            crossed: fill.crossed ?? false,
-            tid: fill.tid ? BigInt(fill.tid) : null,
+            total_size: new Prisma.Decimal(totalSize),
+            avg_price: new Prisma.Decimal(avgPrice),
+            total_value: new Prisma.Decimal(totalValue),
+            total_pnl: hasPnl ? new Prisma.Decimal(totalPnl) : null,
+            total_fee: hasFee ? new Prisma.Decimal(totalFee) : null,
+            fill_count: txFills.length,
+            records: records as any,
           },
           create: {
             wallet_address: address,
-            tx_hash: fill.hash ?? '',
-            order_id: fill.oid ? BigInt(fill.oid) : null,
-            coin: fill.coin ?? 'UNKNOWN',
+            tx_hash: txHash,
+            coin,
             side,
-            price: new Prisma.Decimal(parseFloat(fill.px ?? '0')),
-            size: new Prisma.Decimal(parseFloat(fill.sz ?? '0')),
-            direction: fill.dir ?? null,
-            closed_pnl: fill.closedPnl ? new Prisma.Decimal(parseFloat(fill.closedPnl)) : null,
-            fee: fill.fee ? new Prisma.Decimal(parseFloat(fill.fee)) : null,
-            fee_token: fill.feeToken ?? 'USDC',
-            start_position: fill.startPosition ? new Prisma.Decimal(parseFloat(fill.startPosition)) : null,
-            crossed: fill.crossed ?? false,
-            fill_timestamp: BigInt(fill.time ?? Date.now()),
-            tid: fill.tid ? BigInt(fill.tid) : null,
+            total_size: new Prisma.Decimal(totalSize),
+            avg_price: new Prisma.Decimal(avgPrice),
+            total_value: new Prisma.Decimal(totalValue),
+            total_pnl: hasPnl ? new Prisma.Decimal(totalPnl) : null,
+            total_fee: hasFee ? new Prisma.Decimal(totalFee) : null,
+            fill_count: txFills.length,
+            records: records as any,
+            fill_timestamp: minTimestamp,
           },
         });
       }
@@ -908,26 +963,24 @@ export class TradingDataService {
       where: { address: normalizedAddress },
     });
 
-    // Calculate basic metrics for the period
-    const totalTrades = fills.length;
-    const tradesWithPnl = fills.filter((f) => f.closed_pnl !== null);
-    const winningTrades = tradesWithPnl.filter((f) => parseFloat(f.closed_pnl?.toString() ?? '0') > 0);
-    const losingTrades = tradesWithPnl.filter((f) => parseFloat(f.closed_pnl?.toString() ?? '0') < 0);
+    // Calculate basic metrics for the period (using grouped fill statistics)
+    const totalTrades = fills.reduce((sum, f) => sum + f.fill_count, 0);
+    const tradesWithPnl = fills.filter((f) => f.total_pnl !== null);
+    const winningTrades = tradesWithPnl.filter((f) => parseFloat(f.total_pnl?.toString() ?? '0') > 0);
+    const losingTrades = tradesWithPnl.filter((f) => parseFloat(f.total_pnl?.toString() ?? '0') < 0);
 
     const winRate = tradesWithPnl.length > 0 ? (winningTrades.length / tradesWithPnl.length) * 100 : 0;
 
-    // Calculate total volume for the period
+    // Calculate total volume for the period (using pre-calculated total_value)
     const totalVolume = fills.reduce((sum, f) => {
-      const price = parseFloat(f.price?.toString() ?? '0');
-      const size = parseFloat(f.size?.toString() ?? '0');
-      return sum + price * size;
+      return sum + parseFloat(f.total_value?.toString() ?? '0');
     }, 0);
 
     // Calculate total realized P&L for the period
-    const totalRealizedPnl = tradesWithPnl.reduce((sum, f) => sum + parseFloat(f.closed_pnl?.toString() ?? '0'), 0);
+    const totalRealizedPnl = tradesWithPnl.reduce((sum, f) => sum + parseFloat(f.total_pnl?.toString() ?? '0'), 0);
 
     // Calculate total fees for the period
-    const totalFees = fills.reduce((sum, f) => sum + parseFloat(f.fee?.toString() ?? '0'), 0);
+    const totalFees = fills.reduce((sum, f) => sum + parseFloat(f.total_fee?.toString() ?? '0'), 0);
 
     // Time-based P&L calculations (always calculate these for reference)
     const oneHourAgo = now - 60 * 60 * 1000;
@@ -935,7 +988,7 @@ export class TradingDataService {
     const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
     const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
-    const allTradesWithPnl = allFills.filter((f) => f.closed_pnl !== null);
+    const allTradesWithPnl = allFills.filter((f) => f.total_pnl !== null);
     const pnl1h = this.calculatePeriodMetrics(allTradesWithPnl, allFills, oneHourAgo);
     const pnl24h = this.calculatePeriodMetrics(allTradesWithPnl, allFills, oneDayAgo);
     const pnl7d = this.calculatePeriodMetrics(allTradesWithPnl, allFills, sevenDaysAgo);
@@ -1010,17 +1063,16 @@ export class TradingDataService {
     const periodTrades = tradesWithPnl.filter((t) => Number(t.fill_timestamp) >= sinceTimestamp);
     const periodFills = allFills.filter((f) => Number(f.fill_timestamp) >= sinceTimestamp);
 
-    const pnl = periodTrades.reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0);
+    const pnl = periodTrades.reduce((sum, t) => sum + parseFloat(t.total_pnl?.toString() ?? '0'), 0);
     const volume = periodFills.reduce((sum, f) => {
-      const price = parseFloat(f.price?.toString() ?? '0');
-      const size = parseFloat(f.size?.toString() ?? '0');
-      return sum + price * size;
+      return sum + parseFloat(f.total_value?.toString() ?? '0');
     }, 0);
+    const tradesCount = periodFills.reduce((sum, f) => sum + (f.fill_count ?? 1), 0);
 
     return {
       amount: pnl,
       volume: volume,
-      trades: periodFills.length,
+      trades: tradesCount,
       percentage: volume > 0 ? (pnl / volume) * 100 : 0,
     };
   }
@@ -1051,30 +1103,30 @@ export class TradingDataService {
       const key = this.getAggregationKey(timestamp, period);
 
       const current = aggregatedPnl.get(key) || { pnl: 0, volume: 0, trades: 0 };
-      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
-      const volume = parseFloat(trade.price?.toString() ?? '0') * parseFloat(trade.size?.toString() ?? '0');
+      const pnl = parseFloat(trade.total_pnl?.toString() ?? '0');
+      const volume = parseFloat(trade.total_value?.toString() ?? '0');
 
       aggregatedPnl.set(key, {
         pnl: current.pnl + pnl,
         volume: current.volume + volume,
-        trades: current.trades + 1,
+        trades: current.trades + (trade.fill_count ?? 1),
       });
     }
 
     // Add volume from fills without P&L
     for (const fill of fills) {
-      if (fill.closed_pnl !== null) continue; // Already counted
+      if (fill.total_pnl !== null) continue; // Already counted
 
       const timestamp = Number(fill.fill_timestamp);
       const key = this.getAggregationKey(timestamp, period);
 
       const current = aggregatedPnl.get(key) || { pnl: 0, volume: 0, trades: 0 };
-      const volume = parseFloat(fill.price?.toString() ?? '0') * parseFloat(fill.size?.toString() ?? '0');
+      const volume = parseFloat(fill.total_value?.toString() ?? '0');
 
       aggregatedPnl.set(key, {
         pnl: current.pnl,
         volume: current.volume + volume,
-        trades: current.trades + 1,
+        trades: current.trades + (fill.fill_count ?? 1),
       });
     }
 
@@ -1132,7 +1184,7 @@ export class TradingDataService {
   private calculatePnlForPeriod(trades: any[], sinceTimestamp: number): number {
     return trades
       .filter((t) => Number(t.fill_timestamp) >= sinceTimestamp)
-      .reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0);
+      .reduce((sum, t) => sum + parseFloat(t.total_pnl?.toString() ?? '0'), 0);
   }
 
   private calculatePnlPercentage(pnl: number, volume: number): number {
@@ -1146,13 +1198,13 @@ export class TradingDataService {
     for (const trade of trades) {
       const date = new Date(Number(trade.fill_timestamp)).toISOString().split('T')[0];
       const current = dailyPnl.get(date) || { pnl: 0, volume: 0, trades: 0 };
-      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
-      const volume = parseFloat(trade.price?.toString() ?? '0') * parseFloat(trade.size?.toString() ?? '0');
+      const pnl = parseFloat(trade.total_pnl?.toString() ?? '0');
+      const volume = parseFloat(trade.total_value?.toString() ?? '0');
 
       dailyPnl.set(date, {
         pnl: current.pnl + pnl,
         volume: current.volume + volume,
-        trades: current.trades + 1,
+        trades: current.trades + (trade.fill_count ?? 1),
       });
     }
 
@@ -1177,14 +1229,14 @@ export class TradingDataService {
       }
     }
 
-    // Calculate win/loss streaks
+    // Calculate win/loss streaks (using grouped fill total_pnl)
     let currentWinStreak = 0;
     let currentLossStreak = 0;
     let maxWinStreak = 0;
     let maxLossStreak = 0;
 
     for (const trade of trades) {
-      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
+      const pnl = parseFloat(trade.total_pnl?.toString() ?? '0');
       if (pnl > 0) {
         currentWinStreak++;
         currentLossStreak = 0;
@@ -1201,7 +1253,7 @@ export class TradingDataService {
     let largestLoss = { amount: 0, coin: '' };
 
     for (const trade of trades) {
-      const pnl = parseFloat(trade.closed_pnl?.toString() ?? '0');
+      const pnl = parseFloat(trade.total_pnl?.toString() ?? '0');
       if (pnl > largestWin.amount) {
         largestWin = { amount: pnl, coin: trade.coin };
       }
@@ -1253,8 +1305,8 @@ export class TradingDataService {
     const sortinoRatio = downsideStdDev > 0 ? (avgReturn / downsideStdDev) * Math.sqrt(252) : 0;
 
     // Calculate Profit Factor (gross profit / gross loss)
-    const grossProfit = winningTrades.reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0);
-    const grossLoss = Math.abs(losingTrades.reduce((sum, t) => sum + parseFloat(t.closed_pnl?.toString() ?? '0'), 0));
+    const grossProfit = winningTrades.reduce((sum, t) => sum + parseFloat(t.total_pnl?.toString() ?? '0'), 0);
+    const grossLoss = Math.abs(losingTrades.reduce((sum, t) => sum + parseFloat(t.total_pnl?.toString() ?? '0'), 0));
     const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
 
     // Calculate Max Drawdown

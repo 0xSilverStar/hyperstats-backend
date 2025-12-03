@@ -5,7 +5,15 @@ import { BullModule } from '@nestjs/bull';
 import { PrismaModule } from './prisma/prisma.module';
 
 // Controllers
-import { WalletController, TransactionController, SyncStatusController, TradingController } from './controllers';
+import {
+  WalletController,
+  TransactionController,
+  SyncStatusController,
+  TradingController,
+  TradersController,
+  ActivityController,
+  FavouritesController,
+} from './controllers';
 
 // Services
 import {
@@ -16,13 +24,15 @@ import {
   LedgerSyncService,
   FillSyncService,
   WalletSyncLockService,
+  SyncLockService,
+  TraderRankingService,
 } from './services';
 
 // Queue
 import { TradingDataProcessor } from './queue';
 
 // Scheduler
-import { WalletSyncScheduler } from './scheduler';
+import { WalletSyncScheduler, TraderRankingScheduler } from './scheduler';
 
 // Commands
 import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './commands';
@@ -58,7 +68,15 @@ import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './
     }),
     PrismaModule,
   ],
-  controllers: [WalletController, TransactionController, SyncStatusController, TradingController],
+  controllers: [
+    WalletController,
+    TransactionController,
+    SyncStatusController,
+    TradingController,
+    TradersController,
+    ActivityController,
+    FavouritesController,
+  ],
   providers: [
     // Services
     HyperLiquidInfoService,
@@ -68,10 +86,13 @@ import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './
     TradingDataService,
     LedgerSyncService,
     FillSyncService,
+    SyncLockService,
+    TraderRankingService,
     // Queue Processor
     TradingDataProcessor,
     // Scheduler
     WalletSyncScheduler,
+    TraderRankingScheduler,
     // Commands
     HyperliquidSyncCommand,
     TradingSyncCommand,

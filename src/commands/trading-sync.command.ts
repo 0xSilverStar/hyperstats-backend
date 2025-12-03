@@ -1,6 +1,7 @@
 import { Command, CommandRunner, Option } from 'nest-commander';
 import { PrismaService } from '../prisma/prisma.service';
 import { HyperLiquidInfoService } from '../services/hyperliquid-info.service';
+import { SyncLockService } from '../services/sync-lock.service';
 import { Prisma } from '../../generated/prisma/client';
 import { ConsoleLogger } from '../common/utils/console-logger';
 
@@ -9,7 +10,11 @@ interface TradingSyncOptions {
   limit?: number;
   continuous?: boolean;
   interval?: number;
+  force?: boolean;
 }
+
+const LOCK_NAME = 'trading:sync';
+const LOCK_TIMEOUT_MINUTES = 120; // 2 hours
 
 @Command({
   name: 'trading:sync',
@@ -21,6 +26,7 @@ export class TradingSyncCommand extends CommandRunner {
   constructor(
     private readonly prisma: PrismaService,
     private readonly hlService: HyperLiquidInfoService,
+    private readonly lockService: SyncLockService,
   ) {
     super();
   }
@@ -28,18 +34,66 @@ export class TradingSyncCommand extends CommandRunner {
   async run(_passedParams: string[], options?: TradingSyncOptions): Promise<void> {
     this.console.header('Trading Data Sync');
 
-    if (options?.continuous) {
-      const interval = options.interval ?? 60;
-      this.console.info(`Continuous mode enabled (interval: ${interval}s)`);
-      this.console.warn('Press Ctrl+C to stop');
+    // Check and display lock status
+    const lockInfo = await this.lockService.getLockInfo(LOCK_NAME);
+    if (lockInfo?.isLocked) {
+      this.console.warn(`Sync is currently running by: ${lockInfo.lockedBy}`);
+      this.console.warn(`Started at: ${lockInfo.lockedAt?.toISOString()}`);
+      this.console.warn(`Expires at: ${lockInfo.expiresAt?.toISOString()}`);
 
-      while (true) {
-        await this.syncWallets(options);
-        this.console.info(`Waiting ${interval} seconds until next sync...`);
-        await this.sleep(interval * 1000);
+      if (!options?.force) {
+        this.console.error('Another sync process is running. Use --force to override (not recommended).');
+        return;
       }
-    } else {
-      await this.syncWallets(options);
+
+      this.console.warn('Force mode enabled - releasing existing lock...');
+      await this.lockService.forceReleaseLock(LOCK_NAME);
+    }
+
+    // Try to acquire lock
+    const lockAcquired = await this.lockService.acquireLock(LOCK_NAME, LOCK_TIMEOUT_MINUTES);
+    if (!lockAcquired) {
+      this.console.error('Failed to acquire sync lock. Another process may have started.');
+      return;
+    }
+
+    this.console.info('Lock acquired successfully');
+
+    try {
+      if (options?.continuous) {
+        const interval = options.interval ?? 60;
+        this.console.info(`Continuous mode enabled (interval: ${interval}s)`);
+        this.console.warn('Press Ctrl+C to stop');
+
+        // Handle graceful shutdown
+        process.on('SIGINT', async () => {
+          this.console.warn('Received SIGINT, releasing lock...');
+          await this.lockService.releaseLock(LOCK_NAME);
+          process.exit(0);
+        });
+
+        process.on('SIGTERM', async () => {
+          this.console.warn('Received SIGTERM, releasing lock...');
+          await this.lockService.releaseLock(LOCK_NAME);
+          process.exit(0);
+        });
+
+        while (true) {
+          await this.syncWallets(options);
+          // Extend lock before sleeping
+          await this.lockService.extendLock(LOCK_NAME, LOCK_TIMEOUT_MINUTES);
+          this.console.info(`Waiting ${interval} seconds until next sync...`);
+          await this.sleep(interval * 1000);
+        }
+      } else {
+        await this.syncWallets(options);
+      }
+    } finally {
+      // Release lock when done (only for non-continuous mode)
+      if (!options?.continuous) {
+        await this.lockService.releaseLock(LOCK_NAME);
+        this.console.info('Lock released');
+      }
     }
   }
 
@@ -234,49 +288,104 @@ export class TradingSyncCommand extends CommandRunner {
   }
 
   private async syncFills(address: string, fills: any[]): Promise<number> {
+    // Group fills by tx_hash
+    const groupedMap = new Map<string, any[]>();
+    for (const fill of fills) {
+      const hash = fill.hash ?? '';
+      const existing = groupedMap.get(hash) || [];
+      existing.push(fill);
+      groupedMap.set(hash, existing);
+    }
+
     let count = 0;
 
-    for (const fill of fills) {
-      const side = (fill.side ?? 'B') === 'B' ? 'buy' : 'sell';
+    for (const [txHash, txFills] of groupedMap) {
+      // Calculate statistics
+      let totalSize = 0;
+      let totalValue = 0;
+      let totalPnl = 0;
+      let totalFee = 0;
+      let hasPnl = false;
+      let hasFee = false;
+
+      // Determine side
+      const sides = new Set(txFills.map((f: any) => f.side));
+      let side: string;
+      if (sides.size === 1) {
+        side = sides.has('B') ? 'buy' : 'sell';
+      } else {
+        side = 'mixed';
+      }
+
+      const coin = txFills[0].coin ?? 'UNKNOWN';
+      const records: any[] = [];
+      let minTimestamp = BigInt(txFills[0].time ?? Date.now());
+
+      for (const fill of txFills) {
+        const size = parseFloat(fill.sz ?? '0');
+        const price = parseFloat(fill.px ?? '0');
+        totalSize += size;
+        totalValue += size * price;
+
+        if (fill.closedPnl) {
+          totalPnl += parseFloat(fill.closedPnl);
+          hasPnl = true;
+        }
+        if (fill.fee) {
+          totalFee += parseFloat(fill.fee);
+          hasFee = true;
+        }
+
+        const fillTime = BigInt(fill.time ?? Date.now());
+        if (fillTime < minTimestamp) {
+          minTimestamp = fillTime;
+        }
+
+        records.push({
+          order_id: fill.oid ?? null,
+          coin: fill.coin ?? 'UNKNOWN',
+          side: fill.side === 'B' ? 'buy' : 'sell',
+          price: fill.px ?? '0',
+          size: fill.sz ?? '0',
+          direction: fill.dir ?? null,
+          closed_pnl: fill.closedPnl ?? null,
+          fee: fill.fee ?? null,
+          fee_token: fill.feeToken ?? null,
+          start_position: fill.startPosition ?? null,
+          crossed: fill.crossed ?? false,
+          tid: fill.tid ?? null,
+          timestamp: fill.time ?? Date.now(),
+        });
+      }
+
+      const avgPrice = totalSize > 0 ? totalValue / totalSize : 0;
 
       await this.prisma.fill.upsert({
-        where: {
-          tx_hash_order_id_fill_timestamp: {
-            tx_hash: fill.hash ?? '',
-            order_id: BigInt(fill.oid ?? 0),
-            fill_timestamp: BigInt(fill.time ?? Date.now()),
-          },
-        },
+        where: { tx_hash: txHash },
         update: {
-          wallet_address: address,
-          coin: fill.coin ?? 'UNKNOWN',
+          coin,
           side,
-          price: new Prisma.Decimal(parseFloat(fill.px ?? '0')),
-          size: new Prisma.Decimal(parseFloat(fill.sz ?? '0')),
-          direction: fill.dir ?? null,
-          closed_pnl: fill.closedPnl ? new Prisma.Decimal(parseFloat(fill.closedPnl)) : null,
-          fee: fill.fee ? new Prisma.Decimal(parseFloat(fill.fee)) : null,
-          fee_token: fill.feeToken ?? 'USDC',
-          start_position: fill.startPosition ? new Prisma.Decimal(parseFloat(fill.startPosition)) : null,
-          crossed: fill.crossed ?? false,
-          tid: fill.tid ? BigInt(fill.tid) : null,
+          total_size: new Prisma.Decimal(totalSize),
+          avg_price: new Prisma.Decimal(avgPrice),
+          total_value: new Prisma.Decimal(totalValue),
+          total_pnl: hasPnl ? new Prisma.Decimal(totalPnl) : null,
+          total_fee: hasFee ? new Prisma.Decimal(totalFee) : null,
+          fill_count: txFills.length,
+          records: records as any,
         },
         create: {
           wallet_address: address,
-          tx_hash: fill.hash ?? '',
-          order_id: fill.oid ? BigInt(fill.oid) : null,
-          coin: fill.coin ?? 'UNKNOWN',
+          tx_hash: txHash,
+          coin,
           side,
-          price: new Prisma.Decimal(parseFloat(fill.px ?? '0')),
-          size: new Prisma.Decimal(parseFloat(fill.sz ?? '0')),
-          direction: fill.dir ?? null,
-          closed_pnl: fill.closedPnl ? new Prisma.Decimal(parseFloat(fill.closedPnl)) : null,
-          fee: fill.fee ? new Prisma.Decimal(parseFloat(fill.fee)) : null,
-          fee_token: fill.feeToken ?? 'USDC',
-          start_position: fill.startPosition ? new Prisma.Decimal(parseFloat(fill.startPosition)) : null,
-          crossed: fill.crossed ?? false,
-          fill_timestamp: BigInt(fill.time ?? Date.now()),
-          tid: fill.tid ? BigInt(fill.tid) : null,
+          total_size: new Prisma.Decimal(totalSize),
+          avg_price: new Prisma.Decimal(avgPrice),
+          total_value: new Prisma.Decimal(totalValue),
+          total_pnl: hasPnl ? new Prisma.Decimal(totalPnl) : null,
+          total_fee: hasFee ? new Prisma.Decimal(totalFee) : null,
+          fill_count: txFills.length,
+          records: records as any,
+          fill_timestamp: minTimestamp,
         },
       });
       count++;
@@ -398,5 +507,13 @@ export class TradingSyncCommand extends CommandRunner {
   })
   parseInterval(val: string): number {
     return parseInt(val, 10);
+  }
+
+  @Option({
+    flags: '-f, --force',
+    description: 'Force start even if another sync is running (releases existing lock)',
+  })
+  parseForce(): boolean {
+    return true;
   }
 }

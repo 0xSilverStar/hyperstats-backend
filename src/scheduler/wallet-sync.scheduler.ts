@@ -20,8 +20,8 @@ export class WalletSyncScheduler implements OnModuleInit {
 
     // Start background sync tasks after a short delay
     setTimeout(() => {
-      this.startContinuousWalletSync();
-      this.startContinuousBlockchainSync();
+      void this.startContinuousWalletSync();
+      void this.startContinuousBlockchainSync();
     }, 5000);
   }
 

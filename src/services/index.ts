@@ -5,3 +5,5 @@ export * from './trading-data.service';
 export * from './ledger-sync.service';
 export * from './fill-sync.service';
 export * from './wallet-sync-lock.service';
+export * from './sync-lock.service';
+export * from './trader-ranking.service';

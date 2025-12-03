@@ -1,11 +1,15 @@
 import { Command, CommandRunner, Option } from 'nest-commander';
 import { PrismaService } from '../prisma/prisma.service';
 import { HyperLiquidInfoService } from '../services/hyperliquid-info.service';
+import { SyncLockService } from '../services/sync-lock.service';
 import { ConsoleLogger } from '../common/utils/console-logger';
 
 interface PairsSyncOptions {
   force?: boolean;
 }
+
+const LOCK_NAME = 'pairs:sync';
+const LOCK_TIMEOUT_MINUTES = 30; // 30 minutes (pairs sync is quick)
 
 @Command({
   name: 'pairs:sync',
@@ -17,12 +21,38 @@ export class PairsSyncCommand extends CommandRunner {
   constructor(
     private readonly prisma: PrismaService,
     private readonly hlService: HyperLiquidInfoService,
+    private readonly lockService: SyncLockService,
   ) {
     super();
   }
 
-  async run(_passedParams: string[], _options?: PairsSyncOptions): Promise<void> {
+  async run(_passedParams: string[], options?: PairsSyncOptions): Promise<void> {
     this.console.header('Trading Pairs Sync');
+
+    // Check and display lock status
+    const lockInfo = await this.lockService.getLockInfo(LOCK_NAME);
+    if (lockInfo?.isLocked) {
+      this.console.warn(`Sync is currently running by: ${lockInfo.lockedBy}`);
+      this.console.warn(`Started at: ${lockInfo.lockedAt?.toISOString()}`);
+      this.console.warn(`Expires at: ${lockInfo.expiresAt?.toISOString()}`);
+
+      if (!options?.force) {
+        this.console.error('Another sync process is running. Use --force to override (not recommended).');
+        return;
+      }
+
+      this.console.warn('Force mode enabled - releasing existing lock...');
+      await this.lockService.forceReleaseLock(LOCK_NAME);
+    }
+
+    // Try to acquire lock
+    const lockAcquired = await this.lockService.acquireLock(LOCK_NAME, LOCK_TIMEOUT_MINUTES);
+    if (!lockAcquired) {
+      this.console.error('Failed to acquire sync lock. Another process may have started.');
+      return;
+    }
+
+    this.console.info('Lock acquired successfully');
 
     try {
       const perpResult = await this.syncPerpetualPairs();
@@ -38,6 +68,9 @@ export class PairsSyncCommand extends CommandRunner {
       await this.displaySummary();
     } catch (error) {
       this.console.error(`Failed to sync trading pairs: ${error.message}`);
+    } finally {
+      await this.lockService.releaseLock(LOCK_NAME);
+      this.console.info('Lock released');
     }
   }
 

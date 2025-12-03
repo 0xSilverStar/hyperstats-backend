@@ -22,7 +22,7 @@ ps:
 	$(DC) ps
 
 shell:
-	docker exec -it $(APP) /bin/sh
+	docker exec -it hyperstats /bin/sh
 
 # Build
 build:
@@ -32,7 +32,10 @@ rebuild:
 	$(DC) build --no-cache
 
 migrate:
-	docker exec $(APP) npx prisma db push
+	docker exec hyperstats npx prisma db push
+
+migrate-force:
+	docker exec hyperstats npx prisma db push --force-reset
 
 # Sync
 sync-wallet:
@@ -40,20 +43,20 @@ sync-wallet:
 	curl -X POST http://localhost:9000/v1/wallets/$(ADDRESS)/sync
 
 sync-all:
-	docker exec $(APP) node dist/src/main.js trading:sync
+	docker exec hyperstats node dist/src/main.js trading:sync
 
 sync-blockchain:
-	docker exec $(APP) node dist/src/main.js hyperliquid:sync
+	docker exec hyperstats node dist/src/main.js hyperliquid:sync
 
 sync-blockchain-continuous:
-	docker exec -it $(APP) node dist/src/main.js hyperliquid:sync --continuous
+	docker exec -it hyperstats node dist/src/main.js hyperliquid:sync --continuous
 
 sync-pairs:
-	docker exec $(APP) node dist/src/main.js pairs:sync
+	docker exec hyperstats node dist/src/main.js pairs:sync
 
 # Database
 db-studio:
-	docker exec -it $(APP) npx prisma studio
+	docker exec -it hyperstats npx prisma studio
 
 db-shell:
 	docker exec -it hyperstats-postgres psql -U hyperstats -d hyperstats
