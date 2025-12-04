@@ -115,17 +115,11 @@ export class WalletController {
                   totalPnl: ranking.total_pnl.toString(),
                   pnl24h: {
                     amount: ranking.pnl_24h.toString(),
-                    percentage:
-                      ranking.portfolio_value.toNumber() > 0
-                        ? (ranking.pnl_24h.toNumber() / ranking.portfolio_value.toNumber()) * 100
-                        : 0,
+                    percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_24h.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
                   },
                   pnl7d: {
                     amount: ranking.pnl_7d.toString(),
-                    percentage:
-                      ranking.portfolio_value.toNumber() > 0
-                        ? (ranking.pnl_7d.toNumber() / ranking.portfolio_value.toNumber()) * 100
-                        : 0,
+                    percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_7d.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
                   },
                   winRate: ranking.win_rate.toNumber(),
                   totalTrades: ranking.total_trades,
@@ -197,19 +191,22 @@ export class WalletController {
       }));
       const uniquePairs = [...new Map(walletCoinPairs.map((p) => [`${p.wallet_address}-${p.coin}`, p])).values()];
 
-      const positions = uniquePairs.length > 0 ? await this.prisma.position.findMany({
-        where: {
-          OR: uniquePairs.map((p) => ({
-            wallet_address: p.wallet_address,
-            coin: p.coin,
-          })),
-        },
-        select: {
-          wallet_address: true,
-          coin: true,
-          leverage: true,
-        },
-      }) : [];
+      const positions =
+        uniquePairs.length > 0
+          ? await this.prisma.position.findMany({
+              where: {
+                OR: uniquePairs.map((p) => ({
+                  wallet_address: p.wallet_address,
+                  coin: p.coin,
+                })),
+              },
+              select: {
+                wallet_address: true,
+                coin: true,
+                leverage: true,
+              },
+            })
+          : [];
       const positionMap = new Map(positions.map((p) => [`${p.wallet_address}-${p.coin}`, p]));
 
       // Transform to activity format
@@ -382,10 +379,7 @@ export class WalletController {
    * PUT /v1/wallets/:address/favorite
    */
   @Put(':address/favorite')
-  async toggleFavorite(
-    @Param('address') address: string,
-    @Body() body: { isFavorite?: boolean; note?: string },
-  ) {
+  async toggleFavorite(@Param('address') address: string, @Body() body: { isFavorite?: boolean; note?: string }) {
     const normalizedAddress = address.toLowerCase();
 
     try {

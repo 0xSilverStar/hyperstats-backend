@@ -621,6 +621,30 @@ export class TradingDataService {
     };
   }
 
+  // Retry helper with exponential backoff for transaction failures
+  private async withRetry<T>(operation: () => Promise<T>, maxRetries = 3, baseDelayMs = 500): Promise<T> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        const isRetryable =
+          error.message?.includes('Unable to start a transaction') ||
+          error.message?.includes('Connection pool') ||
+          error.message?.includes('timeout') ||
+          error.code === 'P2024'; // Prisma connection pool timeout
+
+        if (!isRetryable || attempt === maxRetries) {
+          throw error;
+        }
+
+        const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 100;
+        this.logger.warn(`Retry ${attempt}/${maxRetries} after ${Math.round(delay)}ms: ${error.message}`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    throw new Error('Max retries exceeded');
+  }
+
   // Method for full sync (used by cron job)
   async fullSync(address: string): Promise<void> {
     const normalizedAddress = address.toLowerCase();
@@ -629,6 +653,7 @@ export class TradingDataService {
     try {
       await this.ensureWalletExists(normalizedAddress);
 
+      // Fetch all data in parallel (API calls don't use DB connections)
       const [positions, orders, fills, balances] = await Promise.all([
         this.hlService.getUserPositions(normalizedAddress),
         this.hlService.getUserOpenOrders(normalizedAddress),
@@ -636,22 +661,15 @@ export class TradingDataService {
         this.hlService.getUserSpotBalances(normalizedAddress),
       ]);
 
-      // Save all data synchronously for cron job
-      await Promise.all([
-        this.savePositions(normalizedAddress, positions),
-        this.saveOrders(normalizedAddress, orders),
-        this.saveFills(normalizedAddress, fills),
-        this.saveBalances(normalizedAddress, balances),
-      ]);
+      // Save data SEQUENTIALLY to avoid connection pool exhaustion
+      // Each save operation uses a transaction, running them in parallel causes pool exhaustion
+      await this.withRetry(() => this.savePositions(normalizedAddress, positions));
+      await this.withRetry(() => this.saveOrders(normalizedAddress, orders));
+      await this.withRetry(() => this.saveFills(normalizedAddress, fills));
+      await this.withRetry(() => this.saveBalances(normalizedAddress, balances));
 
-      // Update all cache timestamps
-      await Promise.all([
-        this.setCacheTimestamp(normalizedAddress, 'positions'),
-        this.setCacheTimestamp(normalizedAddress, 'orders'),
-        this.setCacheTimestamp(normalizedAddress, 'fills'),
-        this.setCacheTimestamp(normalizedAddress, 'balances'),
-        this.setCacheTimestamp(normalizedAddress, 'profile'),
-      ]);
+      // Update cache timestamps (simple upserts, no transactions needed)
+      await this.setCacheTimestamp(normalizedAddress, 'profile');
 
       const duration = Date.now() - startTime;
       const posCount = positions.assetPositions?.filter((p: any) => Math.abs(parseFloat(p.position?.szi ?? '0')) > 0.00001).length ?? 0;
@@ -967,7 +985,9 @@ export class TradingDataService {
     const winningTrades = tradesWithPnl.filter((f) => parseFloat(f.total_pnl?.toString() ?? '0') > 0);
     const losingTrades = tradesWithPnl.filter((f) => parseFloat(f.total_pnl?.toString() ?? '0') < 0);
 
-    const winRate = tradesWithPnl.length > 0 ? (winningTrades.length / tradesWithPnl.length) * 100 : 0;
+    // Win rate = wins / (wins + losses), excluding breakeven trades
+    const totalWinLossTrades = winningTrades.length + losingTrades.length;
+    const winRate = totalWinLossTrades > 0 ? (winningTrades.length / totalWinLossTrades) * 100 : 0;
 
     // Calculate total volume for the period (using pre-calculated total_value)
     const totalVolume = fills.reduce((sum, f) => {
@@ -1014,8 +1034,8 @@ export class TradingDataService {
     // Current unrealized P&L (current, not affected by period)
     const totalUnrealizedPnl = positions.reduce((sum, p) => sum + parseFloat(p.unrealized_pnl?.toString() ?? '0'), 0);
 
-    // Chart data for the selected period
-    const chartData = this.generateChartDataForPeriod(aggregatedPnl, period);
+    // Chart data for the selected period (include unrealized PnL from current positions)
+    const chartData = this.generateChartDataForPeriod(aggregatedPnl, period, totalUnrealizedPnl);
 
     return {
       address: normalizedAddress,
@@ -1126,12 +1146,17 @@ export class TradingDataService {
     return aggregatedPnl;
   }
 
-  private generateChartDataForPeriod(aggregatedPnl: Map<string, { pnl: number; volume: number; trades: number }>, period: string) {
+  private generateChartDataForPeriod(
+    aggregatedPnl: Map<string, { pnl: number; volume: number; trades: number }>,
+    period: string,
+    unrealizedPnl: number = 0,
+  ) {
     const chartData: Array<{
       date: string;
       time: string;
       pnl: number;
       cumulativePnl: number;
+      totalPnl: number; // Cumulative realized + unrealized (only meaningful for last point)
       volume: number;
       trades: number;
     }> = [];
@@ -1142,9 +1167,11 @@ export class TradingDataService {
     // Calculate cumulative P&L
     let cumulativePnl = 0;
 
-    for (const key of sortedKeys) {
+    for (let i = 0; i < sortedKeys.length; i++) {
+      const key = sortedKeys[i];
       const data = aggregatedPnl.get(key)!;
       cumulativePnl += data.pnl;
+      const isLastPoint = i === sortedKeys.length - 1;
 
       // Format time label based on period using dayjs
       let timeLabel: string;
@@ -1158,13 +1185,32 @@ export class TradingDataService {
         timeLabel = d.format('MMM D');
       }
 
+      // Total P&L = cumulative realized + unrealized (only add unrealized to last point)
+      const totalPnl = isLastPoint ? cumulativePnl + unrealizedPnl : cumulativePnl;
+
       chartData.push({
         date: key,
         time: timeLabel,
         pnl: data.pnl,
         cumulativePnl,
+        totalPnl,
         volume: data.volume,
         trades: data.trades,
+      });
+    }
+
+    // If we have unrealized PnL but no chart data, add a "Now" point
+    if (chartData.length === 0 && unrealizedPnl !== 0) {
+      const now = new Date();
+      const timeLabel = period === '1h' || period === '24h' ? now.toISOString().slice(11, 16) : now.toISOString().slice(5, 10).replace('-', '/');
+      chartData.push({
+        date: now.toISOString().split('T')[0],
+        time: 'Now',
+        pnl: 0,
+        cumulativePnl: 0,
+        totalPnl: unrealizedPnl,
+        volume: 0,
+        trades: 0,
       });
     }
 

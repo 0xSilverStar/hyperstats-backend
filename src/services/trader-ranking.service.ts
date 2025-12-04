@@ -15,19 +15,15 @@ const GRADE_THRESHOLDS = {
 
 // Score weights for ranking calculation
 const SCORE_WEIGHTS = {
-  totalPnl: 0.3, // 30%
-  winRate: 0.2, // 20%
-  totalVolume: 0.2, // 20%
-  recentPnl: 0.15, // 15% (7d PnL)
-  portfolioValue: 0.15, // 15%
+  totalPnl: 0.4, // 40% - Most important: actual profit
+  winRate: 0.35, // 35% - Consistency indicator
+  recentPnl: 0.25, // 25% - Recent performance (7d PnL)
 };
 
 // Normalization ranges
 const NORMALIZATION = {
   totalPnl: { min: -1000000, max: 10000000 },
-  totalVolume: { min: 0, max: 100000000 },
   recentPnl: { min: -100000, max: 1000000 },
-  portfolioValue: { min: 0, max: 50000000 },
 };
 
 interface TraderMetrics {
@@ -55,7 +51,7 @@ export interface TopTraderFilters {
   grade?: string;
   minVolume?: number;
   minWinRate?: number;
-  sortBy?: 'rank' | 'score' | 'total_pnl' | 'win_rate' | 'total_volume' | 'portfolio_value';
+  sortBy?: 'rank' | 'score' | 'total_pnl' | 'win_rate' | 'total_volume' | 'portfolio_value' | 'pnl_30d';
   order?: 'asc' | 'desc';
 }
 
@@ -80,16 +76,12 @@ export class TraderRankingService {
   private calculateScore(metrics: TraderMetrics): number {
     const pnlScore = this.normalizeValue(metrics.totalPnl, NORMALIZATION.totalPnl.min, NORMALIZATION.totalPnl.max);
     const winRateScore = metrics.winRate * 100;
-    const volumeScore = this.normalizeValue(metrics.totalVolume, NORMALIZATION.totalVolume.min, NORMALIZATION.totalVolume.max);
     const recentPnlScore = this.normalizeValue(metrics.pnl7d, NORMALIZATION.recentPnl.min, NORMALIZATION.recentPnl.max);
-    const portfolioScore = this.normalizeValue(metrics.portfolioValue, NORMALIZATION.portfolioValue.min, NORMALIZATION.portfolioValue.max);
 
     const score =
       pnlScore * SCORE_WEIGHTS.totalPnl +
       winRateScore * SCORE_WEIGHTS.winRate +
-      volumeScore * SCORE_WEIGHTS.totalVolume +
-      recentPnlScore * SCORE_WEIGHTS.recentPnl +
-      portfolioScore * SCORE_WEIGHTS.portfolioValue;
+      recentPnlScore * SCORE_WEIGHTS.recentPnl;
 
     return Math.max(0, Math.min(100, score));
   }
@@ -188,10 +180,12 @@ export class TraderRankingService {
       const pnl7d = fills7d.reduce((sum, f) => sum + (f.total_pnl?.toNumber() ?? 0), 0);
       const pnl30d = fills30d.reduce((sum, f) => sum + (f.total_pnl?.toNumber() ?? 0), 0);
 
-      // Calculate win rate
+      // Calculate win rate (wins vs losses, excluding breakeven trades)
       const tradesWithPnl = allFills.filter((f) => f.total_pnl !== null);
       const winningTrades = tradesWithPnl.filter((f) => (f.total_pnl?.toNumber() ?? 0) > 0);
-      const winRate = tradesWithPnl.length > 0 ? winningTrades.length / tradesWithPnl.length : 0;
+      const losingTrades = tradesWithPnl.filter((f) => (f.total_pnl?.toNumber() ?? 0) < 0);
+      const totalWinLossTrades = winningTrades.length + losingTrades.length;
+      const winRate = totalWinLossTrades > 0 ? winningTrades.length / totalWinLossTrades : 0;
 
       // Calculate volume
       const totalVolume = allFills.reduce((sum, f) => sum + (f.total_value?.toNumber() ?? 0), 0);
@@ -259,6 +253,30 @@ export class TraderRankingService {
   }
 
   /**
+   * Process items in batches with limited concurrency
+   */
+  private async processBatchedWithConcurrency<T, R>(
+    items: T[],
+    processor: (item: T) => Promise<R>,
+    batchSize = 10,
+  ): Promise<R[]> {
+    const results: R[] = [];
+
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize);
+      const batchResults = await Promise.all(batch.map(processor));
+      results.push(...batchResults);
+
+      // Small delay between batches to prevent connection pool exhaustion
+      if (i + batchSize < items.length) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    return results;
+  }
+
+  /**
    * Calculate and update rankings for all traders
    */
   async calculateRankings(): Promise<{ total: number; updated: number }> {
@@ -273,9 +291,13 @@ export class TraderRankingService {
     const walletAddresses = walletsWithFills.map((w) => w.wallet_address);
     this.logger.log(`Found ${walletAddresses.length} wallets with trading activity`);
 
-    // Calculate metrics for all traders
-    const metricsPromises = walletAddresses.map((addr) => this.calculateTraderMetrics(addr));
-    const allMetrics = await Promise.all(metricsPromises);
+    // Calculate metrics in batches to avoid connection pool exhaustion
+    // Process 10 wallets at a time instead of all 2500+ in parallel
+    const allMetrics = await this.processBatchedWithConcurrency(
+      walletAddresses,
+      (addr) => this.calculateTraderMetrics(addr),
+      10, // Process 10 wallets concurrently
+    );
 
     // Filter out null metrics and calculate scores
     const tradersWithScores = allMetrics
@@ -296,8 +318,8 @@ export class TraderRankingService {
       grade: this.calculateGrade(index + 1, totalTraders),
     }));
 
-    // Update database in batches
-    const BATCH_SIZE = 100;
+    // Update database in batches (reduced batch size to prevent connection pool exhaustion)
+    const BATCH_SIZE = 20;
     let updated = 0;
 
     for (let i = 0; i < rankedTraders.length; i += BATCH_SIZE) {
@@ -358,6 +380,11 @@ export class TraderRankingService {
 
       updated += batch.length;
       this.logger.debug(`Updated ${updated}/${totalTraders} rankings`);
+
+      // Small delay between batches to prevent connection pool exhaustion
+      if (i + BATCH_SIZE < rankedTraders.length) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
     }
 
     // Clean up rankings for wallets that no longer have fills
