@@ -20,7 +20,6 @@
     "db:push": "prisma db push && npm run prisma:generate",
     "db:pull": "prisma db pull && npm run prisma:generate",
     "hyperliquid:sync": "nest start -- hyperliquid:sync",
-    "hyperliquid:sync-continuous": "nest start -- hyperliquid:sync --continuous",
     "trading:sync": "nest start -- trading:sync",
     "pairs:sync": "nest start -- pairs:sync"
   },
@@ -39,6 +38,8 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
     "dayjs": "^1.11.19",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
     "nest-commander": "^3.20.1",
     "prisma": "^7.1.0",
     "reflect-metadata": "^0.2.2",

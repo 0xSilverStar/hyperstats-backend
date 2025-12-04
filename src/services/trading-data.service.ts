@@ -7,11 +7,7 @@ import { WalletSyncLockService } from './wallet-sync-lock.service';
 import { LedgerSyncService } from './ledger-sync.service';
 import { FillSyncService } from './fill-sync.service';
 import { Prisma } from '../../generated/prisma/client';
-import {
-  getDailyKey,
-  getHourlyKey,
-  utcFromString,
-} from '../lib/dayjs';
+import { getDailyKey, getHourlyKey, utcFromString } from '../lib/dayjs';
 
 const CACHE_TTL_MINUTES = 30;
 
@@ -628,7 +624,7 @@ export class TradingDataService {
   // Method for full sync (used by cron job)
   async fullSync(address: string): Promise<void> {
     const normalizedAddress = address.toLowerCase();
-    this.logger.debug(`Full sync for: ${normalizedAddress}`);
+    const startTime = Date.now();
 
     try {
       await this.ensureWalletExists(normalizedAddress);
@@ -657,9 +653,13 @@ export class TradingDataService {
         this.setCacheTimestamp(normalizedAddress, 'profile'),
       ]);
 
-      this.logger.debug(`Full sync completed for: ${normalizedAddress}`);
+      const duration = Date.now() - startTime;
+      const posCount = positions.assetPositions?.filter((p: any) => Math.abs(parseFloat(p.position?.szi ?? '0')) > 0.00001).length ?? 0;
+      this.logger.log(
+        `${normalizedAddress.slice(0, 10)}... | Position:${posCount} Orders:${orders.length} Balances:${balances.balances?.length ?? 0} | ${duration}ms`,
+      );
     } catch (error) {
-      this.logger.error(`Full sync failed for ${normalizedAddress}: ${error.message}`);
+      this.logger.error(`${normalizedAddress.slice(0, 10)}... failed: ${error.message}`);
       throw error;
     }
   }
@@ -949,9 +949,7 @@ export class TradingDataService {
     });
 
     // Filter fills by period
-    const fills = period === 'all'
-      ? allFills
-      : allFills.filter((f) => Number(f.fill_timestamp) >= sinceTimestamp);
+    const fills = period === 'all' ? allFills : allFills.filter((f) => Number(f.fill_timestamp) >= sinceTimestamp);
 
     // Get current positions for position distribution
     const positions = await this.prisma.position.findMany({
@@ -1052,8 +1050,7 @@ export class TradingDataService {
         ? {
             totalDeposit: parseFloat(wallet.total_deposit?.toString() ?? '0'),
             totalWithdraw: parseFloat(wallet.total_withdraw?.toString() ?? '0'),
-            netDeposit:
-              parseFloat(wallet.total_deposit?.toString() ?? '0') - parseFloat(wallet.total_withdraw?.toString() ?? '0'),
+            netDeposit: parseFloat(wallet.total_deposit?.toString() ?? '0') - parseFloat(wallet.total_withdraw?.toString() ?? '0'),
           }
         : null,
     };
@@ -1091,11 +1088,7 @@ export class TradingDataService {
     }
   }
 
-  private calculateAggregatedPnl(
-    trades: any[],
-    fills: any[],
-    period: string,
-  ): Map<string, { pnl: number; volume: number; trades: number }> {
+  private calculateAggregatedPnl(trades: any[], fills: any[], period: string): Map<string, { pnl: number; volume: number; trades: number }> {
     const aggregatedPnl = new Map<string, { pnl: number; volume: number; trades: number }>();
 
     for (const trade of trades) {
@@ -1133,10 +1126,7 @@ export class TradingDataService {
     return aggregatedPnl;
   }
 
-  private generateChartDataForPeriod(
-    aggregatedPnl: Map<string, { pnl: number; volume: number; trades: number }>,
-    period: string,
-  ) {
+  private generateChartDataForPeriod(aggregatedPnl: Map<string, { pnl: number; volume: number; trades: number }>, period: string) {
     const chartData: Array<{
       date: string;
       time: string;
@@ -1182,9 +1172,7 @@ export class TradingDataService {
   }
 
   private calculatePnlForPeriod(trades: any[], sinceTimestamp: number): number {
-    return trades
-      .filter((t) => Number(t.fill_timestamp) >= sinceTimestamp)
-      .reduce((sum, t) => sum + parseFloat(t.total_pnl?.toString() ?? '0'), 0);
+    return trades.filter((t) => Number(t.fill_timestamp) >= sinceTimestamp).reduce((sum, t) => sum + parseFloat(t.total_pnl?.toString() ?? '0'), 0);
   }
 
   private calculatePnlPercentage(pnl: number, volume: number): number {
@@ -1288,19 +1276,13 @@ export class TradingDataService {
 
     // Calculate Sharpe Ratio (simplified - assumes risk-free rate of 0)
     const avgReturn = dailyReturns.length > 0 ? dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length : 0;
-    const variance =
-      dailyReturns.length > 1
-        ? dailyReturns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (dailyReturns.length - 1)
-        : 0;
+    const variance = dailyReturns.length > 1 ? dailyReturns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (dailyReturns.length - 1) : 0;
     const stdDev = Math.sqrt(variance);
     const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0; // Annualized
 
     // Calculate Sortino Ratio (uses only negative returns for downside deviation)
     const negativeReturns = dailyReturns.filter((r) => r < 0);
-    const downsideVariance =
-      negativeReturns.length > 1
-        ? negativeReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / negativeReturns.length
-        : 0;
+    const downsideVariance = negativeReturns.length > 1 ? negativeReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / negativeReturns.length : 0;
     const downsideStdDev = Math.sqrt(downsideVariance);
     const sortinoRatio = downsideStdDev > 0 ? (avgReturn / downsideStdDev) * Math.sqrt(252) : 0;
 
@@ -1334,10 +1316,7 @@ export class TradingDataService {
     };
   }
 
-  private generateChartData(
-    dailyPnl: Map<string, { pnl: number; volume: number; trades: number }>,
-    fills: any[],
-  ) {
+  private generateChartData(dailyPnl: Map<string, { pnl: number; volume: number; trades: number }>, fills: any[]) {
     // Generate last 30 days of data
     const chartData: Array<{
       date: string;

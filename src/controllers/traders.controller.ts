@@ -37,15 +37,7 @@ export class TradersController {
    */
   @Get('top')
   async getTopTraders(@Query() query: GetTopTradersQuery) {
-    const {
-      limit = 50,
-      offset = 0,
-      grade,
-      minVolume,
-      minWinRate,
-      sortBy,
-      order,
-    } = query;
+    const { limit = 50, offset = 0, grade, minVolume, minWinRate, sortBy, order } = query;
 
     const effectiveLimit = Math.min(Number(limit), 200);
 

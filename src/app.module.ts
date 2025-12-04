@@ -17,6 +17,7 @@ import {
 
 // Services
 import {
+  ProxyRotationService,
   HyperLiquidInfoService,
   ArbitrumSyncService,
   WalletDetectionService,
@@ -68,17 +69,10 @@ import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './
     }),
     PrismaModule,
   ],
-  controllers: [
-    WalletController,
-    TransactionController,
-    SyncStatusController,
-    TradingController,
-    TradersController,
-    ActivityController,
-    FavouritesController,
-  ],
+  controllers: [WalletController, TransactionController, SyncStatusController, TradingController, TradersController, ActivityController, FavouritesController],
   providers: [
     // Services
+    ProxyRotationService,
     HyperLiquidInfoService,
     ArbitrumSyncService,
     WalletDetectionService,

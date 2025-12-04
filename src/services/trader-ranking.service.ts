@@ -78,27 +78,11 @@ export class TraderRankingService {
    * Calculate trader score from metrics
    */
   private calculateScore(metrics: TraderMetrics): number {
-    const pnlScore = this.normalizeValue(
-      metrics.totalPnl,
-      NORMALIZATION.totalPnl.min,
-      NORMALIZATION.totalPnl.max,
-    );
+    const pnlScore = this.normalizeValue(metrics.totalPnl, NORMALIZATION.totalPnl.min, NORMALIZATION.totalPnl.max);
     const winRateScore = metrics.winRate * 100;
-    const volumeScore = this.normalizeValue(
-      metrics.totalVolume,
-      NORMALIZATION.totalVolume.min,
-      NORMALIZATION.totalVolume.max,
-    );
-    const recentPnlScore = this.normalizeValue(
-      metrics.pnl7d,
-      NORMALIZATION.recentPnl.min,
-      NORMALIZATION.recentPnl.max,
-    );
-    const portfolioScore = this.normalizeValue(
-      metrics.portfolioValue,
-      NORMALIZATION.portfolioValue.min,
-      NORMALIZATION.portfolioValue.max,
-    );
+    const volumeScore = this.normalizeValue(metrics.totalVolume, NORMALIZATION.totalVolume.min, NORMALIZATION.totalVolume.max);
+    const recentPnlScore = this.normalizeValue(metrics.pnl7d, NORMALIZATION.recentPnl.min, NORMALIZATION.recentPnl.max);
+    const portfolioScore = this.normalizeValue(metrics.portfolioValue, NORMALIZATION.portfolioValue.min, NORMALIZATION.portfolioValue.max);
 
     const score =
       pnlScore * SCORE_WEIGHTS.totalPnl +
@@ -241,17 +225,11 @@ export class TraderRankingService {
       const shortPositions = positions.filter((p) => p.side?.toLowerCase() === 'short').length;
 
       // Find last trade timestamp
-      const lastFillTimestamp = allFills.reduce(
-        (max, f) => (f.fill_timestamp > max ? f.fill_timestamp : max),
-        BigInt(0),
-      );
+      const lastFillTimestamp = allFills.reduce((max, f) => (f.fill_timestamp > max ? f.fill_timestamp : max), BigInt(0));
       const lastTradeAt = lastFillTimestamp > 0 ? new Date(Number(lastFillTimestamp)) : null;
 
       // Find last activity (most recent of trade or position update)
-      const lastPositionUpdate = positions.reduce(
-        (max, p) => (p.last_updated_at > max ? p.last_updated_at : max),
-        new Date(0),
-      );
+      const lastPositionUpdate = positions.reduce((max, p) => (p.last_updated_at > max ? p.last_updated_at : max), new Date(0));
       const lastActivityAt = lastTradeAt && lastTradeAt > lastPositionUpdate ? lastTradeAt : lastPositionUpdate;
 
       return {
@@ -452,21 +430,15 @@ export class TraderRankingService {
       totalPnl: t.total_pnl.toString(),
       pnl24h: {
         amount: t.pnl_24h.toString(),
-        percentage: t.portfolio_value.toNumber() > 0
-          ? (t.pnl_24h.toNumber() / t.portfolio_value.toNumber()) * 100
-          : 0,
+        percentage: t.portfolio_value.toNumber() > 0 ? (t.pnl_24h.toNumber() / t.portfolio_value.toNumber()) * 100 : 0,
       },
       pnl7d: {
         amount: t.pnl_7d.toString(),
-        percentage: t.portfolio_value.toNumber() > 0
-          ? (t.pnl_7d.toNumber() / t.portfolio_value.toNumber()) * 100
-          : 0,
+        percentage: t.portfolio_value.toNumber() > 0 ? (t.pnl_7d.toNumber() / t.portfolio_value.toNumber()) * 100 : 0,
       },
       pnl30d: {
         amount: t.pnl_30d.toString(),
-        percentage: t.portfolio_value.toNumber() > 0
-          ? (t.pnl_30d.toNumber() / t.portfolio_value.toNumber()) * 100
-          : 0,
+        percentage: t.portfolio_value.toNumber() > 0 ? (t.pnl_30d.toNumber() / t.portfolio_value.toNumber()) * 100 : 0,
       },
       winRate: t.win_rate.toNumber(),
       totalTrades: t.total_trades,
@@ -514,21 +486,15 @@ export class TraderRankingService {
       totalPnl: ranking.total_pnl.toString(),
       pnl24h: {
         amount: ranking.pnl_24h.toString(),
-        percentage: ranking.portfolio_value.toNumber() > 0
-          ? (ranking.pnl_24h.toNumber() / ranking.portfolio_value.toNumber()) * 100
-          : 0,
+        percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_24h.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
       },
       pnl7d: {
         amount: ranking.pnl_7d.toString(),
-        percentage: ranking.portfolio_value.toNumber() > 0
-          ? (ranking.pnl_7d.toNumber() / ranking.portfolio_value.toNumber()) * 100
-          : 0,
+        percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_7d.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
       },
       pnl30d: {
         amount: ranking.pnl_30d.toString(),
-        percentage: ranking.portfolio_value.toNumber() > 0
-          ? (ranking.pnl_30d.toNumber() / ranking.portfolio_value.toNumber()) * 100
-          : 0,
+        percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_30d.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
       },
       winRate: ranking.win_rate.toNumber(),
       totalTrades: ranking.total_trades,

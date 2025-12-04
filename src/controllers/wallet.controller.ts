@@ -132,6 +132,10 @@ export class WalletController {
                   totalVolume: ranking.total_volume.toString(),
                   activePositions: ranking.active_positions,
                   activeOrders: ranking.active_orders,
+                  mainToken: ranking.main_token,
+                  avgPositionValue: ranking.avg_position_value?.toString() ?? '0',
+                  longPositions: ranking.long_positions,
+                  shortPositions: ranking.short_positions,
                   lastActivityAt: ranking.last_activity_at?.toISOString() ?? null,
                 }
               : null,

@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance } from 'axios';
 import {
   HyperLiquidClearinghouseState,
   HyperLiquidOrder,
@@ -9,31 +8,27 @@ import {
   HyperLiquidMeta,
   HyperLiquidSpotMeta,
 } from '../common/interfaces';
+import { ProxyRotationService } from './proxy-rotation.service';
 
 @Injectable()
 export class HyperLiquidInfoService {
   private readonly logger = new Logger(HyperLiquidInfoService.name);
   private readonly nodeUrl: string;
-  private readonly mainnetUrl: string;
   private readonly timeout: number;
-  private readonly maxRetries: number;
   private readonly cacheTtl: number;
   private readonly cache: Map<string, { data: any; expiry: number }> = new Map();
-  private readonly httpClient: AxiosInstance;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly proxyService: ProxyRotationService,
+  ) {
     this.nodeUrl = this.configService.get<string>('HYPERLIQUID_NODE_URL', 'https://api.hyperliquid.xyz');
-    this.mainnetUrl = this.configService.get<string>('HYPERLIQUID_MAINNET_URL', 'https://api.hyperliquid.xyz');
     this.timeout = this.configService.get<number>('HYPERLIQUID_TIMEOUT', 10000);
-    this.maxRetries = this.configService.get<number>('HYPERLIQUID_MAX_RETRIES', 3);
     this.cacheTtl = this.configService.get<number>('HYPERLIQUID_CACHE_TTL', 30);
 
-    this.httpClient = axios.create({
-      timeout: this.timeout,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+    if (this.proxyService.hasProxies) {
+      this.logger.log(`HyperLiquid API using ${this.proxyService.proxyCount} proxies for rotation`);
+    }
   }
 
   private getCacheKey(body: any): string {
@@ -70,56 +65,22 @@ export class HyperLiquidInfoService {
       }
     }
 
-    let lastError: Error | null = null;
+    try {
+      // Use proxy rotation service for API calls (handles 429 errors and rotation automatically)
+      const data = await this.proxyService.postWithRotation<any>(`${this.nodeUrl}/info`, body, this.timeout);
 
-    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
-      try {
-        // Try VPS node first
-        const response = await this.httpClient.post(`${this.nodeUrl}/info`, body);
-
-        if (response.data) {
-          if (useCache) {
-            this.setCache(cacheKey, response.data, ttl);
-          }
-          return response.data;
-        }
-      } catch (error) {
-        this.logger.warn(`VPS node failed, trying mainnet`, {
-          attempt: attempt + 1,
-          error: error.message,
-        });
-
-        try {
-          // Try mainnet as fallback
-          const response = await this.httpClient.post(`${this.mainnetUrl}/info`, body);
-
-          if (response.data) {
-            if (useCache) {
-              this.setCache(cacheKey, response.data, ttl);
-            }
-            return response.data;
-          }
-        } catch (mainnetError) {
-          lastError = mainnetError;
-          this.logger.warn(`HyperLiquid API attempt ${attempt + 1} failed`, {
-            error: mainnetError.message,
-            body,
-          });
-
-          if (attempt < this.maxRetries - 1) {
-            // Exponential backoff: 100ms, 200ms, 400ms
-            await this.sleep(100 * Math.pow(2, attempt));
-          }
-        }
+      if (data && useCache) {
+        this.setCache(cacheKey, data, ttl);
       }
+
+      return data;
+    } catch (error) {
+      this.logger.error('HyperLiquid API failed', {
+        body,
+        error: error.message,
+      });
+      throw error;
     }
-
-    this.logger.error('HyperLiquid API failed after retries', {
-      body,
-      error: lastError?.message,
-    });
-
-    throw new Error(`Failed to fetch data from HyperLiquid after ${this.maxRetries} attempts: ${lastError?.message}`);
   }
 
   private sleep(ms: number): Promise<void> {

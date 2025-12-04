@@ -8,17 +8,17 @@ import { ConsoleLogger } from '../common/utils/console-logger';
 interface TradingSyncOptions {
   address?: string;
   limit?: number;
-  continuous?: boolean;
-  interval?: number;
   force?: boolean;
 }
+
+const SYNC_INTERVAL_SECONDS = 60; // 1 minute between full cycles
 
 const LOCK_NAME = 'trading:sync';
 const LOCK_TIMEOUT_MINUTES = 120; // 2 hours
 
 @Command({
   name: 'trading:sync',
-  description: 'Sync trading data (positions, orders, fills, balances) from HyperLiquid',
+  description: 'Sync trading data (positions, orders, fills, balances) from HyperLiquid (runs continuously every 60 seconds)',
 })
 export class TradingSyncCommand extends CommandRunner {
   private readonly console = new ConsoleLogger('Trading');
@@ -58,42 +58,30 @@ export class TradingSyncCommand extends CommandRunner {
     }
 
     this.console.info('Lock acquired successfully');
+    this.console.info(`Running continuously (interval: ${SYNC_INTERVAL_SECONDS}s)`);
+    this.console.warn('Press Ctrl+C to stop');
 
-    try {
-      if (options?.continuous) {
-        const interval = options.interval ?? 60;
-        this.console.info(`Continuous mode enabled (interval: ${interval}s)`);
-        this.console.warn('Press Ctrl+C to stop');
+    // Handle graceful shutdown
+    process.on('SIGINT', async () => {
+      this.console.warn('Received SIGINT, releasing lock...');
+      await this.lockService.releaseLock(LOCK_NAME);
+      process.exit(0);
+    });
 
-        // Handle graceful shutdown
-        process.on('SIGINT', async () => {
-          this.console.warn('Received SIGINT, releasing lock...');
-          await this.lockService.releaseLock(LOCK_NAME);
-          process.exit(0);
-        });
+    process.on('SIGTERM', async () => {
+      this.console.warn('Received SIGTERM, releasing lock...');
+      await this.lockService.releaseLock(LOCK_NAME);
+      process.exit(0);
+    });
 
-        process.on('SIGTERM', async () => {
-          this.console.warn('Received SIGTERM, releasing lock...');
-          await this.lockService.releaseLock(LOCK_NAME);
-          process.exit(0);
-        });
+    // Run continuously
+    while (true) {
+      await this.syncWallets(options);
 
-        while (true) {
-          await this.syncWallets(options);
-          // Extend lock before sleeping
-          await this.lockService.extendLock(LOCK_NAME, LOCK_TIMEOUT_MINUTES);
-          this.console.info(`Waiting ${interval} seconds until next sync...`);
-          await this.sleep(interval * 1000);
-        }
-      } else {
-        await this.syncWallets(options);
-      }
-    } finally {
-      // Release lock when done (only for non-continuous mode)
-      if (!options?.continuous) {
-        await this.lockService.releaseLock(LOCK_NAME);
-        this.console.info('Lock released');
-      }
+      // Extend lock before sleeping
+      await this.lockService.extendLock(LOCK_NAME, LOCK_TIMEOUT_MINUTES);
+      this.console.info(`Waiting ${SYNC_INTERVAL_SECONDS} seconds until next sync...`);
+      await this.sleep(SYNC_INTERVAL_SECONDS * 1000);
     }
   }
 
@@ -127,15 +115,15 @@ export class TradingSyncCommand extends CommandRunner {
           totalFills += result.fills;
 
           this.console.success(
-            `[${i + 1}/${addresses.length}] ${address.slice(0, 10)}... | ` + `Pos: ${result.positions} | Orders: ${result.orders} | Fills: ${result.fills}`,
+            `[${i + 1}/${addresses.length}] ${address}... | ` + `Position: ${result.positions} | Orders: ${result.orders} | Fills: ${result.fills}`,
           );
         } catch (error) {
-          this.console.error(`[${i + 1}/${addresses.length}] ${address.slice(0, 10)}... failed: ${error.message}`);
+          this.console.error(`[${i + 1}/${addresses.length}] ${address}... failed: ${error.message}`);
           failCount++;
         }
 
-        // 15 second delay to avoid rate limiting
-        await this.sleep(15000);
+        // 2 second delay (proxy rotation handles rate limiting)
+        await this.sleep(2000);
       }
 
       const duration = Date.now() - startTime;
@@ -490,22 +478,6 @@ export class TradingSyncCommand extends CommandRunner {
     description: 'Number of wallets to sync (default: all)',
   })
   parseLimit(val: string): number {
-    return parseInt(val, 10);
-  }
-
-  @Option({
-    flags: '-c, --continuous',
-    description: 'Run continuously',
-  })
-  parseContinuous(): boolean {
-    return true;
-  }
-
-  @Option({
-    flags: '-i, --interval <interval>',
-    description: 'Sync interval in seconds for continuous mode',
-  })
-  parseInterval(val: string): number {
     return parseInt(val, 10);
   }
 

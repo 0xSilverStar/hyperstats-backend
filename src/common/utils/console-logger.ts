@@ -96,24 +96,15 @@ export class ConsoleLogger {
   syncSummary(params: { totalIterations: number; totalTransactions: number; totalWhales: number; duration?: number }): void {
     const { totalIterations, totalTransactions, totalWhales, duration } = params;
 
-    console.log(`\n${colors.cyan}┌─────────────────────────────────────────┐${colors.reset}`);
-    console.log(`${colors.cyan}│${colors.reset} ${colors.bright}Sync Summary${colors.reset}                            ${colors.cyan}│${colors.reset}`);
-    console.log(`${colors.cyan}├─────────────────────────────────────────┤${colors.reset}`);
+    const durationStr = duration ? ` | Duration: ${colors.magenta}${(duration / 1000).toFixed(1)}s${colors.reset}` : '';
     console.log(
-      `${colors.cyan}│${colors.reset}  Iterations:    ${colors.yellow}${String(totalIterations).padStart(20)}${colors.reset} ${colors.cyan}│${colors.reset}`,
+      `\n${colors.bright}Sync Summary:${colors.reset} ` +
+        `Iterations: ${colors.yellow}${totalIterations}${colors.reset} | ` +
+        `Transactions: ${colors.blue}${totalTransactions.toLocaleString()}${colors.reset} | ` +
+        `Whales: ${colors.green}${totalWhales.toLocaleString()}${colors.reset}` +
+        durationStr +
+        '\n',
     );
-    console.log(
-      `${colors.cyan}│${colors.reset}  Transactions:  ${colors.blue}${totalTransactions.toLocaleString().padStart(20)}${colors.reset} ${colors.cyan}│${colors.reset}`,
-    );
-    console.log(
-      `${colors.cyan}│${colors.reset}  Whales Found:  ${colors.green}${totalWhales.toLocaleString().padStart(20)}${colors.reset} ${colors.cyan}│${colors.reset}`,
-    );
-    if (duration) {
-      console.log(
-        `${colors.cyan}│${colors.reset}  Duration:      ${colors.magenta}${(duration / 1000).toFixed(1).padStart(18)}s${colors.reset} ${colors.cyan}│${colors.reset}`,
-      );
-    }
-    console.log(`${colors.cyan}└─────────────────────────────────────────┘${colors.reset}\n`);
   }
 
   // Status display

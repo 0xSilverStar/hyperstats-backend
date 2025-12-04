@@ -183,14 +183,13 @@ export class FillSyncService {
    */
   async syncFills(address: string, forceFullSync = false): Promise<{ synced: number; total: number }> {
     const normalizedAddress = address.toLowerCase();
-    this.logger.log(`Starting fill sync for ${normalizedAddress}, forceFullSync: ${forceFullSync}`);
+    const syncStartTime = Date.now();
 
     // Check if cache is still valid
     if (!forceFullSync && (await this.isCacheValid(normalizedAddress))) {
       const syncStatus = await this.prisma.fillSyncStatus.findUnique({
         where: { wallet_address: normalizedAddress },
       });
-      this.logger.log(`Fill cache still valid for ${normalizedAddress}, skipping sync`);
       return { synced: 0, total: syncStatus?.total_count ?? 0 };
     }
 
@@ -217,8 +216,6 @@ export class FillSyncService {
           break;
         }
 
-        this.logger.debug(`Fetched ${fills.length} fills for ${normalizedAddress} starting from ${startTime}`);
-
         await this.saveFills(normalizedAddress, fills);
         totalSynced += fills.length;
 
@@ -239,14 +236,14 @@ export class FillSyncService {
 
       await this.releaseSyncLock(normalizedAddress, true, lastTime, totalCount);
 
-      this.logger.log(`Fill sync completed for ${normalizedAddress}: synced ${totalSynced}, total ${totalCount}`);
+      const duration = Date.now() - syncStartTime;
+      if (totalSynced > 0) {
+        this.logger.log(`${normalizedAddress.slice(0, 10)}... fills | +${totalSynced} total:${totalCount} | ${duration}ms`);
+      }
       return { synced: totalSynced, total: totalCount };
     } catch (error) {
       await this.releaseSyncLock(normalizedAddress, false);
-      this.logger.error(`Error syncing fills for ${normalizedAddress}`, {
-        error: error.message,
-        startTime: startTime.toString(),
-      });
+      this.logger.error(`${normalizedAddress.slice(0, 10)}... fills failed: ${error.message}`);
       throw error;
     }
   }

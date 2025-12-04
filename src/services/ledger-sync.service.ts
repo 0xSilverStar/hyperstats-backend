@@ -160,14 +160,13 @@ export class LedgerSyncService {
    */
   async syncLedgerUpdates(address: string, forceFullSync = false): Promise<{ synced: number; total: number }> {
     const normalizedAddress = address.toLowerCase();
-    this.logger.log(`Starting ledger sync for ${normalizedAddress}, forceFullSync: ${forceFullSync}`);
+    const syncStartTime = Date.now();
 
     // Check if cache is still valid (unless forcing full sync)
     if (!forceFullSync && (await this.isCacheValid(normalizedAddress))) {
       const syncStatus = await this.prisma.ledgerSyncStatus.findUnique({
         where: { wallet_address: normalizedAddress },
       });
-      this.logger.log(`Ledger cache still valid for ${normalizedAddress}, skipping sync`);
       return { synced: 0, total: syncStatus?.total_count ?? 0 };
     }
 
@@ -197,8 +196,6 @@ export class LedgerSyncService {
           break;
         }
 
-        this.logger.debug(`Fetched ${updates.length} ledger updates for ${normalizedAddress} starting from ${startTime}`);
-
         // Save updates to database
         await this.saveLedgerUpdates(normalizedAddress, updates);
         totalSynced += updates.length;
@@ -225,15 +222,15 @@ export class LedgerSyncService {
 
       await this.releaseSyncLock(normalizedAddress, true, lastTime, totalCount);
 
-      this.logger.log(`Ledger sync completed for ${normalizedAddress}: synced ${totalSynced}, total ${totalCount}`);
+      const duration = Date.now() - syncStartTime;
+      if (totalSynced > 0) {
+        this.logger.log(`${normalizedAddress.slice(0, 10)}... ledger | +${totalSynced} total:${totalCount} | ${duration}ms`);
+      }
       return { synced: totalSynced, total: totalCount };
     } catch (error) {
       // Release lock on error
       await this.releaseSyncLock(normalizedAddress, false);
-      this.logger.error(`Error syncing ledger for ${normalizedAddress}`, {
-        error: error.message,
-        startTime: startTime.toString(),
-      });
+      this.logger.error(`${normalizedAddress.slice(0, 10)}... ledger failed: ${error.message}`);
       throw error;
     }
   }

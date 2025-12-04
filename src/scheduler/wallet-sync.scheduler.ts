@@ -55,8 +55,8 @@ export class WalletSyncScheduler implements OnModuleInit {
             this.logger.error(`Failed to sync ${wallet.address}: ${error.message}`);
           }
 
-          // 15 second interval between wallets
-          await this.sleep(15000);
+          // 2 second interval between wallets (proxy rotation handles rate limiting)
+          await this.sleep(2000);
         }
 
         this.logger.log('Wallet sync cycle completed');

@@ -14,7 +14,7 @@ export class TraderRankingScheduler implements OnModuleInit {
 
     // Run initial ranking calculation after startup (30 seconds delay)
     setTimeout(() => {
-      this.calculateRankings();
+      void this.calculateRankings();
     }, 30000);
   }
 

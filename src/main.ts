@@ -62,8 +62,8 @@ async function bootstrap() {
     console.log('  GET  /api/v1/sync-status');
     console.log('');
     console.log('CLI Commands (run with npm run start -- <command>):');
-    console.log('  hyperliquid:sync [-c, --continuous] [-i, --interval <seconds>]');
-    console.log('  trading:sync [-a, --address <address>] [-l, --limit <number>] [-c, --continuous] [-i, --interval <seconds>]');
+    console.log('  hyperliquid:sync [-f, --force]                              (runs continuously every 5 minutes)');
+    console.log('  trading:sync [-a, --address <addr>] [-l, --limit <n>] [-f]  (runs continuously every 60 seconds)');
     console.log('  pairs:sync [-f, --force]');
   }
 }

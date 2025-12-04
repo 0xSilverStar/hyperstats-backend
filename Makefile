@@ -46,10 +46,7 @@ sync-all:
 	docker exec hyperstats node dist/src/main.js trading:sync
 
 sync-blockchain:
-	docker exec hyperstats node dist/src/main.js hyperliquid:sync
-
-sync-blockchain-continuous:
-	docker exec -it hyperstats node dist/src/main.js hyperliquid:sync --continuous
+	docker exec -it hyperstats node dist/src/main.js hyperliquid:sync
 
 sync-pairs:
 	docker exec hyperstats node dist/src/main.js pairs:sync

@@ -58,8 +58,8 @@ model Transaction {
   @@map("transactions")
 }
 
-// SyncStatus model - tracks blockchain sync progress
-model SyncStatus {
+// TransactionSyncStatus model - tracks blockchain sync progress for USDC transactions
+model TransactionSyncStatus {
   id                Int       @id @default(autoincrement())
   start_block       Int
   end_block         Int
@@ -71,7 +71,7 @@ model SyncStatus {
 
   @@unique([start_block, end_block], name: "unique_block_range")
   @@index([status])
-  @@map("sync_status")
+  @@map("transaction_sync_status")
 }
 
 // Position model - stores trader positions

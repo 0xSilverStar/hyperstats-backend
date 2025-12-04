@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,14 +13,12 @@ interface SyncGap {
 
 @Injectable()
 export class ArbitrumSyncService {
-  private readonly logger = new Logger(ArbitrumSyncService.name);
   private readonly console = new ConsoleLogger('Arbitrum');
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly chainId: string;
   private readonly usdcContract: string;
   private readonly bridgeAddress: string;
-  private readonly blockChunkSize: number;
   private readonly offsetSize: number;
 
   constructor(
@@ -33,7 +31,6 @@ export class ArbitrumSyncService {
     this.chainId = this.configService.get<string>('ARBISCAN_CHAIN_ID', '42161');
     this.usdcContract = this.configService.get<string>('ARBISCAN_USDC_CONTRACT', '0xaf88d065e77c8cC2239327C5EDb3A432268e5831');
     this.bridgeAddress = this.configService.get<string>('ARBISCAN_BRIDGE_ADDRESS', '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7');
-    this.blockChunkSize = this.configService.get<number>('ARBISCAN_BLOCK_CHUNK_SIZE', 100000000);
     this.offsetSize = this.configService.get<number>('ARBISCAN_OFFSET_SIZE', 10000);
   }
 
@@ -84,7 +81,7 @@ export class ArbitrumSyncService {
   }
 
   private async findGaps(currentChainBlock: number): Promise<SyncGap[]> {
-    const completedRanges = await this.prisma.syncStatus.findMany({
+    const completedRanges = await this.prisma.transactionSyncStatus.findMany({
       where: { status: 'completed' },
       orderBy: { start_block: 'asc' },
       select: { start_block: true, end_block: true },
@@ -220,7 +217,7 @@ export class ArbitrumSyncService {
       const endBlockInt = endBlock;
 
       // Check if this exact range already exists
-      const exists = await this.prisma.syncStatus.findFirst({
+      const exists = await this.prisma.transactionSyncStatus.findFirst({
         where: {
           start_block: startBlockInt,
           end_block: endBlockInt,
@@ -232,7 +229,7 @@ export class ArbitrumSyncService {
       }
 
       // Check for overlapping ranges
-      const overlapping = await this.prisma.syncStatus.findFirst({
+      const overlapping = await this.prisma.transactionSyncStatus.findFirst({
         where: {
           OR: [
             {
@@ -253,7 +250,7 @@ export class ArbitrumSyncService {
         return;
       }
 
-      await this.prisma.syncStatus.create({
+      await this.prisma.transactionSyncStatus.create({
         data: {
           start_block: startBlockInt,
           end_block: endBlockInt,
@@ -320,17 +317,17 @@ export class ArbitrumSyncService {
 
   async getSyncStatus() {
     const [totalSynced, currentSync, lastCompleted, highestBlock] = await Promise.all([
-      this.prisma.syncStatus.count({
+      this.prisma.transactionSyncStatus.count({
         where: { status: 'completed' },
       }),
-      this.prisma.syncStatus.findFirst({
+      this.prisma.transactionSyncStatus.findFirst({
         where: { status: 'syncing' },
       }),
-      this.prisma.syncStatus.findFirst({
+      this.prisma.transactionSyncStatus.findFirst({
         where: { status: 'completed' },
         orderBy: { completed_at: 'desc' },
       }),
-      this.prisma.syncStatus.aggregate({
+      this.prisma.transactionSyncStatus.aggregate({
         where: { status: 'completed' },
         _max: { end_block: true },
       }),
@@ -364,5 +361,91 @@ export class ArbitrumSyncService {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Merge adjacent block ranges to reduce table size
+   * Example: [1-100], [101-200], [201-300] -> [1-300]
+   */
+  async mergeAdjacentRanges(): Promise<{ mergedCount: number; deletedCount: number }> {
+    this.console.info('Starting block range merge...');
+
+    const completedRanges = await this.prisma.transactionSyncStatus.findMany({
+      where: { status: 'completed' },
+      orderBy: { start_block: 'asc' },
+    });
+
+    if (completedRanges.length <= 1) {
+      this.console.info('No ranges to merge');
+      return { mergedCount: 0, deletedCount: 0 };
+    }
+
+    const rangesToDelete: number[] = [];
+    const rangesToCreate: { start: number; end: number }[] = [];
+
+    let currentMergeStart = completedRanges[0].start_block;
+    let currentMergeEnd = completedRanges[0].end_block;
+    let mergeStartId = completedRanges[0].id;
+
+    for (let i = 1; i < completedRanges.length; i++) {
+      const range = completedRanges[i];
+
+      // Check if ranges are adjacent (end_block + 1 = next start_block)
+      if (currentMergeEnd + 1 >= range.start_block) {
+        // Ranges are adjacent or overlapping, extend the merge
+        currentMergeEnd = Math.max(currentMergeEnd, range.end_block);
+        rangesToDelete.push(range.id);
+      } else {
+        // Gap found, save current merge if it spans multiple ranges
+        if (rangesToDelete.length > 0 || currentMergeEnd !== completedRanges[i - 1].end_block) {
+          rangesToCreate.push({ start: currentMergeStart, end: currentMergeEnd });
+          rangesToDelete.push(mergeStartId);
+        }
+
+        // Start new merge
+        currentMergeStart = range.start_block;
+        currentMergeEnd = range.end_block;
+        mergeStartId = range.id;
+      }
+    }
+
+    // Handle the last merge group
+    const lastRange = completedRanges[completedRanges.length - 1];
+    if (rangesToDelete.includes(lastRange.id) || currentMergeStart !== lastRange.start_block) {
+      rangesToCreate.push({ start: currentMergeStart, end: currentMergeEnd });
+      if (!rangesToDelete.includes(mergeStartId)) {
+        rangesToDelete.push(mergeStartId);
+      }
+    }
+
+    if (rangesToDelete.length === 0) {
+      this.console.info('No adjacent ranges found to merge');
+      return { mergedCount: 0, deletedCount: 0 };
+    }
+
+    // Perform the merge in a transaction
+    await this.prisma.$transaction(async (tx) => {
+      // Delete old ranges
+      await tx.transactionSyncStatus.deleteMany({
+        where: { id: { in: rangesToDelete } },
+      });
+
+      // Create new merged ranges
+      for (const range of rangesToCreate) {
+        await tx.transactionSyncStatus.create({
+          data: {
+            start_block: range.start,
+            end_block: range.end,
+            last_synced_block: range.end,
+            status: 'completed',
+            completed_at: new Date(),
+          },
+        });
+      }
+    });
+
+    this.console.success(`Merged ${rangesToCreate.length} range(s), deleted ${rangesToDelete.length} old record(s)`);
+
+    return { mergedCount: rangesToCreate.length, deletedCount: rangesToDelete.length };
   }
 }
