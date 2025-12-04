@@ -1,4 +1,17 @@
 services:
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: hyperstats-autoheal
+    restart: always
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: all
+      AUTOHEAL_INTERVAL: 30
+      AUTOHEAL_START_PERIOD: 60
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - hyperstats-network
+
   postgres:
     image: postgres:16-alpine
     container_name: hyperstats-postgres

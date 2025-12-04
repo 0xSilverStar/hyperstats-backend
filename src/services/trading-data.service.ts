@@ -705,7 +705,7 @@ export class TradingDataService {
           },
         });
       }
-    });
+    }, { timeout: 30000 });
 
     // Update cache timestamp
     await this.setCacheTimestamp(address, 'positions');
@@ -763,7 +763,7 @@ export class TradingDataService {
           },
         });
       }
-    });
+    }, { timeout: 30000 });
 
     await this.setCacheTimestamp(address, 'orders');
   }
@@ -869,7 +869,7 @@ export class TradingDataService {
           },
         });
       }
-    });
+    }, { timeout: 30000 });
 
     await this.setCacheTimestamp(address, 'fills');
   }
@@ -902,7 +902,7 @@ export class TradingDataService {
           },
         });
       }
-    });
+    }, { timeout: 30000 });
 
     await this.setCacheTimestamp(address, 'balances');
   }
