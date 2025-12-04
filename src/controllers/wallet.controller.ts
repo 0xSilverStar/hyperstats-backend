@@ -301,6 +301,11 @@ export class WalletController {
       // Transform positions
       const formattedPositions = positions.map((pos) => {
         const ranking = rankingMap.get(pos.wallet_address);
+        // Calculate ROI percentage from unrealized PnL and position value
+        const pnlAmount = pos.unrealized_pnl?.toNumber() || 0;
+        const posValue = pos.position_value?.toNumber() || 1;
+        const roiPercentage = posValue > 0 ? (pnlAmount / posValue) * 100 : 0;
+
         return {
           id: `${pos.wallet_address}-${pos.coin}`,
           traderAddress: pos.wallet_address,
@@ -308,11 +313,11 @@ export class WalletController {
           traderGrade: ranking?.grade ?? null,
           asset: pos.coin,
           side: pos.side?.toUpperCase() || 'LONG',
-          size: pos.size?.toString() || '0',
+          size: pos.position_size?.toString() || '0',
           value: pos.position_value?.toString() || '0',
           pnl: {
             amount: pos.unrealized_pnl?.toString() || '0',
-            percentage: pos.roi?.toString() || '0',
+            percentage: roiPercentage.toFixed(2),
           },
           entryPrice: pos.entry_price?.toString() || '0',
           markPrice: pos.mark_price?.toString() || '0',
