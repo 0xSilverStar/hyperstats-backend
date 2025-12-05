@@ -27,6 +27,7 @@ import {
   WalletSyncLockService,
   SyncLockService,
   TraderRankingService,
+  PositionSnapshotService,
 } from './services';
 
 // Queue
@@ -82,6 +83,7 @@ import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './
     FillSyncService,
     SyncLockService,
     TraderRankingService,
+    PositionSnapshotService,
     // Queue Processor
     TradingDataProcessor,
     // Scheduler

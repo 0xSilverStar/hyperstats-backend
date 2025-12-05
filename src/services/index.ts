@@ -8,3 +8,4 @@ export * from './fill-sync.service';
 export * from './wallet-sync-lock.service';
 export * from './sync-lock.service';
 export * from './trader-ranking.service';
+export * from './position-snapshot.service';

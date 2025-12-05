@@ -362,3 +362,54 @@ model Favourite {
   @@index([wallet_address])
   @@map("favourites")
 }
+
+// PositionSnapshot model - stores position snapshots for tracking changes
+model PositionSnapshot {
+  id               Int      @id @default(autoincrement())
+  wallet_address   String
+  coin             String
+  position_size    Decimal  @db.Decimal(65, 18)
+  entry_price      Decimal  @db.Decimal(65, 18)
+  mark_price       Decimal  @db.Decimal(65, 18)
+  unrealized_pnl   Decimal  @db.Decimal(65, 18)
+  leverage         Int
+  margin_used      Decimal  @db.Decimal(65, 18)
+  side             String   // 'long' or 'short'
+  position_value   Decimal  @db.Decimal(65, 18)
+  liquidation_price Decimal? @db.Decimal(65, 18)
+  snapshot_at      DateTime @default(now())
+  created_at       DateTime @default(now())
+
+  @@index([wallet_address])
+  @@index([coin])
+  @@index([snapshot_at])
+  @@index([wallet_address, snapshot_at])
+  @@index([wallet_address, coin, snapshot_at])
+  @@map("position_snapshots")
+}
+
+// PositionChange model - stores detected position changes (opens/closes)
+model PositionChange {
+  id              Int      @id @default(autoincrement())
+  wallet_address  String
+  coin            String
+  change_type     String   // 'open_long', 'close_long', 'open_short', 'close_short', 'increase', 'decrease'
+  side            String   // 'long' or 'short'
+  size_before     Decimal? @db.Decimal(65, 18)
+  size_after      Decimal? @db.Decimal(65, 18)
+  size_change     Decimal  @db.Decimal(65, 18)
+  value_change    Decimal  @db.Decimal(65, 18)
+  entry_price     Decimal? @db.Decimal(65, 18)
+  mark_price      Decimal? @db.Decimal(65, 18)
+  realized_pnl    Decimal? @db.Decimal(65, 18) // For closes
+  leverage        Int?
+  detected_at     DateTime @default(now())
+  created_at      DateTime @default(now())
+
+  @@index([wallet_address])
+  @@index([coin])
+  @@index([change_type])
+  @@index([detected_at])
+  @@index([wallet_address, detected_at])
+  @@map("position_changes")
+}

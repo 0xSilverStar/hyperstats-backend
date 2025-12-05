@@ -115,7 +115,7 @@ export class TraderRankingService {
 
     try {
       // Get fill statistics
-      const [allFills, fills24h, fills7d, fills30d, positions, orders] = await Promise.all([
+      const [allFills, fills24h, fills7d, fills30d, positions, orders, balances] = await Promise.all([
         // All fills for total PnL, volume, win rate, and main token
         this.prisma.fill.findMany({
           where: { wallet_address: normalizedAddress },
@@ -159,12 +159,21 @@ export class TraderRankingService {
             position_value: true,
             unrealized_pnl: true,
             margin_used: true,
+            leverage: true,
             last_updated_at: true,
           },
         }),
         // Active orders
         this.prisma.order.count({
           where: { wallet_address: normalizedAddress, status: 'open' },
+        }),
+        // Spot balances for portfolio calculation
+        this.prisma.balance.findMany({
+          where: { wallet_address: normalizedAddress },
+          select: {
+            coin: true,
+            entry_value: true,
+          },
         }),
       ]);
 
@@ -191,28 +200,37 @@ export class TraderRankingService {
       const totalVolume = allFills.reduce((sum, f) => sum + (f.total_value?.toNumber() ?? 0), 0);
       const avgTradeSize = allFills.length > 0 ? totalVolume / allFills.length : 0;
 
-      // Calculate main token (most frequently traded)
-      const tokenCounts: Record<string, number> = {};
-      for (const fill of allFills) {
-        tokenCounts[fill.coin] = (tokenCounts[fill.coin] || 0) + 1;
-      }
+      // Calculate main token from CURRENT POSITIONS (largest position by value)
+      // This fixes the bug where mainToken was showing most traded historically instead of current position
       let mainToken: string | null = null;
-      let maxCount = 0;
-      for (const [token, count] of Object.entries(tokenCounts)) {
-        if (count > maxCount) {
-          maxCount = count;
-          mainToken = token;
+      if (positions.length > 0) {
+        let maxPositionValue = 0;
+        for (const pos of positions) {
+          const posValue = Math.abs(pos.position_value?.toNumber() ?? 0);
+          if (posValue > maxPositionValue) {
+            maxPositionValue = posValue;
+            mainToken = pos.coin;
+          }
         }
       }
 
-      // Calculate portfolio value from positions
-      const portfolioValue = positions.reduce((sum, p) => {
-        return sum + (p.position_value?.toNumber() ?? 0) + (p.unrealized_pnl?.toNumber() ?? 0);
+      // Calculate FUTURES value (margin = position_value / leverage)
+      const futuresMargin = positions.reduce((sum, p) => {
+        const posValue = Math.abs(p.position_value?.toNumber() ?? 0);
+        const leverage = p.leverage || 1;
+        return sum + (posValue / leverage);
       }, 0);
 
-      // Calculate average position value
-      const totalPositionValue = positions.reduce((sum, p) => sum + Math.abs(p.position_value?.toNumber() ?? 0), 0);
-      const avgPositionValue = positions.length > 0 ? totalPositionValue / positions.length : 0;
+      // Calculate SPOT value from balances
+      const spotValue = balances.reduce((sum, b) => {
+        return sum + (b.entry_value?.toNumber() ?? 0);
+      }, 0);
+
+      // Portfolio = FUTURES margin + SPOT value (this is what the user actually has)
+      const portfolioValue = futuresMargin + spotValue;
+
+      // Calculate average position value (margin-based, not notional)
+      const avgPositionValue = positions.length > 0 ? futuresMargin / positions.length : 0;
 
       // Count long and short positions
       const longPositions = positions.filter((p) => p.side?.toLowerCase() === 'long').length;

@@ -2,17 +2,20 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TradingDataService } from '../services/trading-data.service';
 import { ArbitrumSyncService } from '../services/arbitrum-sync.service';
+import { PositionSnapshotService } from '../services/position-snapshot.service';
 
 @Injectable()
 export class WalletSyncScheduler implements OnModuleInit {
   private readonly logger = new Logger(WalletSyncScheduler.name);
   private isWalletSyncing = false;
   private isBlockchainSyncing = false;
+  private isSnapshotting = false;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly tradingDataService: TradingDataService,
     private readonly arbitrumSyncService: ArbitrumSyncService,
+    private readonly positionSnapshotService: PositionSnapshotService,
   ) {}
 
   async onModuleInit() {
@@ -22,6 +25,7 @@ export class WalletSyncScheduler implements OnModuleInit {
     setTimeout(() => {
       void this.startContinuousWalletSync();
       void this.startContinuousBlockchainSync();
+      void this.startContinuousPositionSnapshots();
     }, 5000);
   }
 
@@ -99,10 +103,46 @@ export class WalletSyncScheduler implements OnModuleInit {
     }
   }
 
+  /**
+   * Continuous position snapshots - 10 minute interval
+   */
+  private async startContinuousPositionSnapshots() {
+    this.logger.log('Starting continuous position snapshots...');
+
+    while (true) {
+      if (this.isSnapshotting) {
+        await this.sleep(5000);
+        continue;
+      }
+
+      this.isSnapshotting = true;
+
+      try {
+        const result = await this.positionSnapshotService.takeSnapshot();
+        this.logger.log(`Position snapshot: ${result.snapshotsCreated} positions, ${result.changesDetected} changes`);
+
+        // Cleanup old snapshots daily (check every snapshot cycle)
+        const now = new Date();
+        if (now.getHours() === 0 && now.getMinutes() < 15) {
+          await this.positionSnapshotService.cleanupOldSnapshots(7);
+          await this.positionSnapshotService.cleanupOldChanges(30);
+        }
+      } catch (error) {
+        this.logger.error(`Position snapshot error: ${error.message}`);
+      } finally {
+        this.isSnapshotting = false;
+      }
+
+      // 10 minute interval
+      await this.sleep(600000);
+    }
+  }
+
   getSyncStatus() {
     return {
       isWalletSyncing: this.isWalletSyncing,
       isBlockchainSyncing: this.isBlockchainSyncing,
+      isSnapshotting: this.isSnapshotting,
     };
   }
 

@@ -1,5 +1,6 @@
 import { Controller, Get, Param, Query, HttpException, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PositionSnapshotService } from '../services/position-snapshot.service';
 import { Prisma } from '../../generated/prisma/client';
 
 interface GetLiveActivityQuery {
@@ -12,9 +13,21 @@ interface GetLiveActivityQuery {
   grade?: string;
 }
 
+interface GetPositionChangesQuery {
+  limit?: number;
+  offset?: number;
+  walletAddress?: string;
+  coin?: string;
+  changeType?: string;
+  since?: string;
+}
+
 @Controller('v1/activity')
 export class ActivityController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly positionSnapshotService: PositionSnapshotService,
+  ) {}
 
   /**
    * Get live activity feed from top traders
@@ -373,6 +386,127 @@ export class ActivityController {
       throw new HttpException(
         {
           error: 'Failed to fetch activity stats',
+          message: error.message,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Get position changes (opens/closes detected from snapshots)
+   * GET /v1/activity/position-changes
+   */
+  @Get('position-changes')
+  async getPositionChanges(@Query() query: GetPositionChangesQuery) {
+    const {
+      limit = 50,
+      offset = 0,
+      walletAddress,
+      coin,
+      changeType,
+      since,
+    } = query;
+
+    try {
+      const result = await this.positionSnapshotService.getPositionChanges({
+        limit: Math.min(Number(limit), 200),
+        offset: Number(offset),
+        walletAddress,
+        coin,
+        changeType,
+        since: since ? new Date(since) : undefined,
+      });
+
+      // Enrich with trader ranking info
+      const addresses = [...new Set(result.changes.map((c) => c.walletAddress))];
+      const rankings = await this.prisma.traderRanking.findMany({
+        where: { wallet_address: { in: addresses } },
+        select: { wallet_address: true, rank: true, grade: true },
+      });
+      const rankingMap = new Map(rankings.map((r) => [r.wallet_address, r]));
+
+      const enrichedChanges = result.changes.map((change) => {
+        const ranking = rankingMap.get(change.walletAddress);
+        return {
+          ...change,
+          trader: {
+            address: change.walletAddress,
+            rank: ranking?.rank ?? null,
+            grade: ranking?.grade ?? null,
+          },
+        };
+      });
+
+      return {
+        changes: enrichedChanges,
+        pagination: result.pagination,
+      };
+    } catch (error) {
+      throw new HttpException(
+        {
+          error: 'Failed to fetch position changes',
+          message: error.message,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Get position history for a wallet
+   * GET /v1/activity/position-history/:address
+   */
+  @Get('position-history/:address')
+  async getPositionHistory(
+    @Param('address') address: string,
+    @Query('coin') coin?: string,
+    @Query('limit') limit = 100,
+  ) {
+    try {
+      const history = await this.positionSnapshotService.getPositionHistory(
+        address,
+        coin,
+        Math.min(Number(limit), 500),
+      );
+
+      return {
+        address: address.toLowerCase(),
+        coin: coin || 'all',
+        history,
+      };
+    } catch (error) {
+      throw new HttpException(
+        {
+          error: 'Failed to fetch position history',
+          message: error.message,
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Get PnL history from snapshots
+   * GET /v1/activity/pnl-history/:address
+   */
+  @Get('pnl-history/:address')
+  async getPnlHistory(
+    @Param('address') address: string,
+    @Query('period') period: '1h' | '24h' | '7d' | '30d' = '24h',
+  ) {
+    try {
+      const history = await this.positionSnapshotService.getPnlHistory(address, period);
+
+      return {
+        address: address.toLowerCase(),
+        period,
+        history,
+      };
+    } catch (error) {
+      throw new HttpException(
+        {
+          error: 'Failed to fetch PnL history',
           message: error.message,
         },
         HttpStatus.INTERNAL_SERVER_ERROR,
