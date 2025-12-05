@@ -104,10 +104,10 @@ export class WalletSyncScheduler implements OnModuleInit {
   }
 
   /**
-   * Continuous position snapshots - 10 minute interval
+   * Continuous position snapshots - 2 minute interval for faster detection
    */
   private async startContinuousPositionSnapshots() {
-    this.logger.log('Starting continuous position snapshots...');
+    this.logger.log('Starting continuous position snapshots (2 minute interval)...');
 
     while (true) {
       if (this.isSnapshotting) {
@@ -123,7 +123,7 @@ export class WalletSyncScheduler implements OnModuleInit {
 
         // Cleanup old snapshots daily (check every snapshot cycle)
         const now = new Date();
-        if (now.getHours() === 0 && now.getMinutes() < 15) {
+        if (now.getHours() === 0 && now.getMinutes() < 5) {
           await this.positionSnapshotService.cleanupOldSnapshots(7);
           await this.positionSnapshotService.cleanupOldChanges(30);
         }
@@ -133,8 +133,8 @@ export class WalletSyncScheduler implements OnModuleInit {
         this.isSnapshotting = false;
       }
 
-      // 10 minute interval
-      await this.sleep(600000);
+      // 2 minute interval for faster position change detection
+      await this.sleep(120000);
     }
   }
 

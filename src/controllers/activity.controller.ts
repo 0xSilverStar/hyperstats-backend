@@ -410,7 +410,7 @@ export class ActivityController {
 
     try {
       const result = await this.positionSnapshotService.getPositionChanges({
-        limit: Math.min(Number(limit), 200),
+        limit: Math.min(Number(limit), 1000),
         offset: Number(offset),
         walletAddress,
         coin,
