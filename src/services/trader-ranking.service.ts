@@ -558,6 +558,76 @@ export class TraderRankingService {
   }
 
   /**
+   * Update position-related fields for a trader (called when positions sync)
+   * This keeps mainToken and position counts up-to-date in real-time
+   */
+  async updatePositionFields(walletAddress: string): Promise<void> {
+    const normalizedAddress = walletAddress.toLowerCase();
+
+    try {
+      // Get current positions
+      const positions = await this.prisma.position.findMany({
+        where: { wallet_address: normalizedAddress },
+        select: {
+          coin: true,
+          side: true,
+          position_value: true,
+          leverage: true,
+          last_updated_at: true,
+        },
+      });
+
+      // Calculate main token from current largest position
+      let mainToken: string | null = null;
+      let maxPositionValue = 0;
+      for (const pos of positions) {
+        const posValue = Math.abs(pos.position_value?.toNumber() ?? 0);
+        if (posValue > maxPositionValue) {
+          maxPositionValue = posValue;
+          mainToken = pos.coin;
+        }
+      }
+
+      // Count positions by side
+      const longPositions = positions.filter((p) => p.side?.toLowerCase() === 'long').length;
+      const shortPositions = positions.filter((p) => p.side?.toLowerCase() === 'short').length;
+      const activePositions = positions.length;
+
+      // Calculate average position value (margin-based)
+      const futuresMargin = positions.reduce((sum, p) => {
+        const posValue = Math.abs(p.position_value?.toNumber() ?? 0);
+        const leverage = p.leverage || 1;
+        return sum + (posValue / leverage);
+      }, 0);
+      const avgPositionValue = activePositions > 0 ? futuresMargin / activePositions : 0;
+
+      // Find last activity
+      const lastPositionUpdate = positions.reduce(
+        (max, p) => (p.last_updated_at > max ? p.last_updated_at : max),
+        new Date(0),
+      );
+
+      // Update only position-related fields (preserving rank, score, grade, etc.)
+      await this.prisma.traderRanking.updateMany({
+        where: { wallet_address: normalizedAddress },
+        data: {
+          main_token: mainToken,
+          active_positions: activePositions,
+          long_positions: longPositions,
+          short_positions: shortPositions,
+          avg_position_value: new Prisma.Decimal(avgPositionValue),
+          last_activity_at: lastPositionUpdate > new Date(0) ? lastPositionUpdate : undefined,
+        },
+      });
+
+      this.logger.debug(`Updated position fields for ${normalizedAddress}: mainToken=${mainToken}, positions=${activePositions}`);
+    } catch (error) {
+      // Don't fail if ranking doesn't exist yet
+      this.logger.debug(`Could not update position fields for ${normalizedAddress}: ${error.message}`);
+    }
+  }
+
+  /**
    * Get ranking statistics summary
    */
   async getRankingStats(): Promise<{

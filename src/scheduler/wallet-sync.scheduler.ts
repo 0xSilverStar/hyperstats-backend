@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TradingDataService } from '../services/trading-data.service';
 import { ArbitrumSyncService } from '../services/arbitrum-sync.service';
 import { PositionSnapshotService } from '../services/position-snapshot.service';
+import { TraderRankingService } from '../services/trader-ranking.service';
 
 @Injectable()
 export class WalletSyncScheduler implements OnModuleInit {
@@ -16,6 +17,7 @@ export class WalletSyncScheduler implements OnModuleInit {
     private readonly tradingDataService: TradingDataService,
     private readonly arbitrumSyncService: ArbitrumSyncService,
     private readonly positionSnapshotService: PositionSnapshotService,
+    private readonly traderRankingService: TraderRankingService,
   ) {}
 
   async onModuleInit() {
@@ -54,6 +56,11 @@ export class WalletSyncScheduler implements OnModuleInit {
         for (const wallet of wallets) {
           try {
             await this.tradingDataService.fullSync(wallet.address);
+
+            // Update position-related fields in ranking table (mainToken, activePositions, etc.)
+            // This keeps ranking data current without waiting for daily recalculation
+            await this.traderRankingService.updatePositionFields(wallet.address);
+
             this.logger.debug(`Synced wallet: ${wallet.address.slice(0, 10)}...`);
           } catch (error) {
             this.logger.error(`Failed to sync ${wallet.address}: ${error.message}`);

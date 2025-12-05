@@ -143,12 +143,12 @@ export class WalletController {
   }
 
   /**
-   * Get activity for all favorite wallets
+   * Get position changes (past activity) for all favorite wallets
    * GET /v1/wallets/favorites-activity
    */
   @Get('favorites-activity')
   async favoritesActivity(@Query('limit') limit = 100) {
-    const effectiveLimit = Math.min(Number(limit), 200);
+    const effectiveLimit = Math.min(Number(limit), 500);
 
     try {
       // Get all favorite wallet addresses
@@ -166,10 +166,10 @@ export class WalletController {
 
       const addresses = favoriteWallets.map((w) => w.address.toLowerCase());
 
-      // Get recent fills from favorite wallets
-      const fills = await this.prisma.fill.findMany({
+      // Get recent position changes from favorite wallets
+      const positionChanges = await this.prisma.positionChange.findMany({
         where: { wallet_address: { in: addresses } },
-        orderBy: { fill_timestamp: 'desc' },
+        orderBy: { detected_at: 'desc' },
         take: effectiveLimit,
       });
 
@@ -184,64 +184,48 @@ export class WalletController {
       });
       const rankingMap = new Map(rankings.map((r) => [r.wallet_address, r]));
 
-      // Get positions for leverage info
-      const walletCoinPairs = fills.map((f) => ({
-        wallet_address: f.wallet_address,
-        coin: f.coin,
-      }));
-      const uniquePairs = [...new Map(walletCoinPairs.map((p) => [`${p.wallet_address}-${p.coin}`, p])).values()];
-
-      const positions =
-        uniquePairs.length > 0
-          ? await this.prisma.position.findMany({
-              where: {
-                OR: uniquePairs.map((p) => ({
-                  wallet_address: p.wallet_address,
-                  coin: p.coin,
-                })),
-              },
-              select: {
-                wallet_address: true,
-                coin: true,
-                leverage: true,
-              },
-            })
-          : [];
-      const positionMap = new Map(positions.map((p) => [`${p.wallet_address}-${p.coin}`, p]));
-
       // Transform to activity format
-      const activities = fills.map((fill) => {
-        const ranking = rankingMap.get(fill.wallet_address);
-        const position = positionMap.get(`${fill.wallet_address}-${fill.coin}`);
+      const activities = positionChanges.map((change) => {
+        const ranking = rankingMap.get(change.wallet_address);
 
+        // Map change_type to activity type
         let activityType = 'trade';
-        const value = fill.total_value.toNumber();
-        if (value > 100000) {
-          activityType = 'large_order';
+        if (change.change_type === 'open_long' || change.change_type === 'open_short') {
+          activityType = 'position_open';
+        } else if (change.change_type === 'close_long' || change.change_type === 'close_short') {
+          activityType = 'position_close';
+        }
+
+        // Determine side based on change_type
+        let side = change.side?.toUpperCase() || 'LONG';
+        if (change.change_type.includes('long')) {
+          side = 'LONG';
+        } else if (change.change_type.includes('short')) {
+          side = 'SHORT';
         }
 
         return {
-          id: fill.tx_hash,
+          id: change.id.toString(),
           type: activityType,
+          changeType: change.change_type,
           trader: {
-            address: fill.wallet_address,
+            address: change.wallet_address,
             rank: ranking?.rank ?? null,
             grade: ranking?.grade ?? null,
           },
-          asset: fill.coin,
-          side: fill.side.toUpperCase(),
-          size: fill.total_size.toString(),
-          price: fill.avg_price.toString(),
-          value: fill.total_value.toString(),
-          pnl: fill.total_pnl
+          asset: change.coin,
+          side,
+          size: change.size_change?.toString() ?? '0',
+          price: change.mark_price?.toString() ?? '0',
+          value: change.value_change?.toString() ?? '0',
+          pnl: change.realized_pnl
             ? {
-                amount: fill.total_pnl.toString(),
+                amount: change.realized_pnl.toString(),
                 percentage: null,
               }
             : null,
-          leverage: position?.leverage ?? null,
-          fillCount: fill.fill_count,
-          timestamp: new Date(Number(fill.fill_timestamp)).toISOString(),
+          leverage: change.leverage ?? null,
+          timestamp: change.detected_at.toISOString(),
         };
       });
 
