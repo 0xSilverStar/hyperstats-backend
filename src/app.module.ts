@@ -13,6 +13,7 @@ import {
   TradersController,
   ActivityController,
   FavouritesController,
+  TokenAnalyticsController,
 } from './controllers';
 
 // Services
@@ -28,6 +29,7 @@ import {
   SyncLockService,
   TraderRankingService,
   PositionSnapshotService,
+  TokenAnalyticsService,
 } from './services';
 
 // Queue
@@ -70,7 +72,7 @@ import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './
     }),
     PrismaModule,
   ],
-  controllers: [WalletController, TransactionController, SyncStatusController, TradingController, TradersController, ActivityController, FavouritesController],
+  controllers: [WalletController, TransactionController, SyncStatusController, TradingController, TradersController, ActivityController, FavouritesController, TokenAnalyticsController],
   providers: [
     // Services
     ProxyRotationService,
@@ -84,6 +86,7 @@ import { HyperliquidSyncCommand, TradingSyncCommand, PairsSyncCommand } from './
     SyncLockService,
     TraderRankingService,
     PositionSnapshotService,
+    TokenAnalyticsService,
     // Queue Processor
     TradingDataProcessor,
     // Scheduler

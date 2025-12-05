@@ -9,3 +9,4 @@ export * from './wallet-sync-lock.service';
 export * from './sync-lock.service';
 export * from './trader-ranking.service';
 export * from './position-snapshot.service';
+export * from './token-analytics.service';

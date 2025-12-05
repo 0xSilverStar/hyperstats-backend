@@ -5,3 +5,4 @@ export * from './trading.controller';
 export * from './traders.controller';
 export * from './activity.controller';
 export * from './favourites.controller';
+export * from './token-analytics.controller';
