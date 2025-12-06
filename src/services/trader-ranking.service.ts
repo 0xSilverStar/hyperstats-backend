@@ -190,6 +190,7 @@ export class TraderRankingService {
       const pnl30d = fills30d.reduce((sum, f) => sum + (f.total_pnl?.toNumber() ?? 0), 0);
 
       // Calculate win rate (wins vs losses, excluding breakeven trades)
+      // Note: Each fill record represents a tx_hash grouped trade, so this is trade-level accuracy
       const tradesWithPnl = allFills.filter((f) => f.total_pnl !== null);
       const winningTrades = tradesWithPnl.filter((f) => (f.total_pnl?.toNumber() ?? 0) > 0);
       const losingTrades = tradesWithPnl.filter((f) => (f.total_pnl?.toNumber() ?? 0) < 0);
@@ -466,36 +467,43 @@ export class TraderRankingService {
       this.prisma.traderRanking.count({ where }),
     ]);
 
-    const tradersData = traders.map((t) => ({
-      rank: t.rank,
-      address: t.wallet_address,
-      grade: t.grade,
-      score: t.score.toNumber(),
-      portfolioValue: t.portfolio_value.toString(),
-      totalPnl: t.total_pnl.toString(),
-      pnl24h: {
-        amount: t.pnl_24h.toString(),
-        percentage: t.portfolio_value.toNumber() > 0 ? (t.pnl_24h.toNumber() / t.portfolio_value.toNumber()) * 100 : 0,
-      },
-      pnl7d: {
-        amount: t.pnl_7d.toString(),
-        percentage: t.portfolio_value.toNumber() > 0 ? (t.pnl_7d.toNumber() / t.portfolio_value.toNumber()) * 100 : 0,
-      },
-      pnl30d: {
-        amount: t.pnl_30d.toString(),
-        percentage: t.portfolio_value.toNumber() > 0 ? (t.pnl_30d.toNumber() / t.portfolio_value.toNumber()) * 100 : 0,
-      },
-      winRate: t.win_rate.toNumber(),
-      totalTrades: t.total_trades,
-      totalVolume: t.total_volume.toString(),
-      activePositions: t.active_positions,
-      activeOrders: t.active_orders,
-      mainToken: t.main_token,
-      avgPositionValue: t.avg_position_value?.toString() ?? '0',
-      longPositions: t.long_positions,
-      shortPositions: t.short_positions,
-      lastActivityAt: t.last_activity_at?.toISOString() ?? null,
-    }));
+    const tradersData = traders.map((t) => {
+      const totalVolume = t.total_volume.toNumber();
+      // Calculate percentage based on total volume for more stable/meaningful percentages
+      // This represents "return on trading volume" rather than "return on portfolio"
+      const calcPercentage = (pnl: number) => (totalVolume > 0 ? (pnl / totalVolume) * 100 : 0);
+
+      return {
+        rank: t.rank,
+        address: t.wallet_address,
+        grade: t.grade,
+        score: t.score.toNumber(),
+        portfolioValue: t.portfolio_value.toString(),
+        totalPnl: t.total_pnl.toString(),
+        pnl24h: {
+          amount: t.pnl_24h.toString(),
+          percentage: calcPercentage(t.pnl_24h.toNumber()),
+        },
+        pnl7d: {
+          amount: t.pnl_7d.toString(),
+          percentage: calcPercentage(t.pnl_7d.toNumber()),
+        },
+        pnl30d: {
+          amount: t.pnl_30d.toString(),
+          percentage: calcPercentage(t.pnl_30d.toNumber()),
+        },
+        winRate: t.win_rate.toNumber(),
+        totalTrades: t.total_trades,
+        totalVolume: t.total_volume.toString(),
+        activePositions: t.active_positions,
+        activeOrders: t.active_orders,
+        mainToken: t.main_token,
+        avgPositionValue: t.avg_position_value?.toString() ?? '0',
+        longPositions: t.long_positions,
+        shortPositions: t.short_positions,
+        lastActivityAt: t.last_activity_at?.toISOString() ?? null,
+      };
+    });
 
     return {
       traders: tradersData,
@@ -522,6 +530,10 @@ export class TraderRankingService {
       return null;
     }
 
+    const totalVolume = ranking.total_volume.toNumber();
+    // Calculate percentage based on total volume for more stable/meaningful percentages
+    const calcPercentage = (pnl: number) => (totalVolume > 0 ? (pnl / totalVolume) * 100 : 0);
+
     return {
       rank: ranking.rank,
       address: ranking.wallet_address,
@@ -531,15 +543,15 @@ export class TraderRankingService {
       totalPnl: ranking.total_pnl.toString(),
       pnl24h: {
         amount: ranking.pnl_24h.toString(),
-        percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_24h.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
+        percentage: calcPercentage(ranking.pnl_24h.toNumber()),
       },
       pnl7d: {
         amount: ranking.pnl_7d.toString(),
-        percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_7d.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
+        percentage: calcPercentage(ranking.pnl_7d.toNumber()),
       },
       pnl30d: {
         amount: ranking.pnl_30d.toString(),
-        percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_30d.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
+        percentage: calcPercentage(ranking.pnl_30d.toNumber()),
       },
       winRate: ranking.win_rate.toNumber(),
       totalTrades: ranking.total_trades,

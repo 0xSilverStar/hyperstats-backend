@@ -107,31 +107,35 @@ export class WalletController {
             note: w.note,
             lastActivityAt: w.last_activity_at?.toISOString() ?? null,
             ranking: ranking
-              ? {
-                  rank: ranking.rank,
-                  grade: ranking.grade,
-                  score: ranking.score.toNumber(),
-                  portfolioValue: ranking.portfolio_value.toString(),
-                  totalPnl: ranking.total_pnl.toString(),
-                  pnl24h: {
-                    amount: ranking.pnl_24h.toString(),
-                    percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_24h.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
-                  },
-                  pnl7d: {
-                    amount: ranking.pnl_7d.toString(),
-                    percentage: ranking.portfolio_value.toNumber() > 0 ? (ranking.pnl_7d.toNumber() / ranking.portfolio_value.toNumber()) * 100 : 0,
-                  },
-                  winRate: ranking.win_rate.toNumber(),
-                  totalTrades: ranking.total_trades,
-                  totalVolume: ranking.total_volume.toString(),
-                  activePositions: ranking.active_positions,
-                  activeOrders: ranking.active_orders,
-                  mainToken: ranking.main_token,
-                  avgPositionValue: ranking.avg_position_value?.toString() ?? '0',
-                  longPositions: ranking.long_positions,
-                  shortPositions: ranking.short_positions,
-                  lastActivityAt: ranking.last_activity_at?.toISOString() ?? null,
-                }
+              ? (() => {
+                  const totalVolume = ranking.total_volume.toNumber();
+                  const calcPercentage = (pnl: number) => (totalVolume > 0 ? (pnl / totalVolume) * 100 : 0);
+                  return {
+                    rank: ranking.rank,
+                    grade: ranking.grade,
+                    score: ranking.score.toNumber(),
+                    portfolioValue: ranking.portfolio_value.toString(),
+                    totalPnl: ranking.total_pnl.toString(),
+                    pnl24h: {
+                      amount: ranking.pnl_24h.toString(),
+                      percentage: calcPercentage(ranking.pnl_24h.toNumber()),
+                    },
+                    pnl7d: {
+                      amount: ranking.pnl_7d.toString(),
+                      percentage: calcPercentage(ranking.pnl_7d.toNumber()),
+                    },
+                    winRate: ranking.win_rate.toNumber(),
+                    totalTrades: ranking.total_trades,
+                    totalVolume: ranking.total_volume.toString(),
+                    activePositions: ranking.active_positions,
+                    activeOrders: ranking.active_orders,
+                    mainToken: ranking.main_token,
+                    avgPositionValue: ranking.avg_position_value?.toString() ?? '0',
+                    longPositions: ranking.long_positions,
+                    shortPositions: ranking.short_positions,
+                    lastActivityAt: ranking.last_activity_at?.toISOString() ?? null,
+                  };
+                })()
               : null,
           };
         }),
@@ -286,10 +290,12 @@ export class WalletController {
       // Transform positions
       const formattedPositions = positions.map((pos) => {
         const ranking = rankingMap.get(pos.wallet_address);
-        // Calculate ROI percentage from unrealized PnL and position value
+        // Calculate ROI percentage from unrealized PnL and margin used (actual capital at risk)
         const pnlAmount = pos.unrealized_pnl?.toNumber() || 0;
-        const posValue = pos.position_value?.toNumber() || 1;
-        const roiPercentage = posValue > 0 ? (pnlAmount / posValue) * 100 : 0;
+        const marginUsed = pos.margin_used?.toNumber() || 0;
+        // Use margin_used for ROI (return on actual capital), fall back to position_value if margin is 0
+        const roiBase = marginUsed > 0 ? marginUsed : (pos.position_value?.toNumber() || 1);
+        const roiPercentage = roiBase > 0 ? (pnlAmount / roiBase) * 100 : 0;
 
         return {
           id: `${pos.wallet_address}-${pos.coin}`,
